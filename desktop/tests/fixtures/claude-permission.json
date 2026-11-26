@@ -1,0 +1,11 @@
+{
+  "session_id": "e2e-session",
+  "transcript_path": "C:\\Users\\XXX\\.claude\\projects\\demo\\e2e.jsonl",
+  "cwd": "C:\\Users\\XXX\\demo",
+  "hook_event_name": "PermissionRequest",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "npm test",
+    "description": "Run the test suite"
+  }
+}

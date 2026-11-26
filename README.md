@@ -31,6 +31,8 @@
   <img src="docs/images/readme-hero.png" width="760" alt="CodeIsland expanded from the MacBook notch, showing Claude Code, Codex, Cursor and Gemini CLI sessions">
 </p>
 
+> **Windows:** an independent, clean-room Tauri 2 + React port lives in [`desktop/`](desktop/README.md). It targets Windows 10/11 and ships separately from the macOS release channel.
+
 ## Why CodeIsland?
 
 Coding agents spend a lot of time either working or waiting on you — and you only find out by switching to their window. CodeIsland turns the notch into a live status bar for all of them: which session is thinking, which one needs an approval, which one just finished. Approve the tool call or answer the question right there, or click once to jump to the exact terminal tab.

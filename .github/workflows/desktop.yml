@@ -1,0 +1,176 @@
+name: Desktop
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+    paths:
+      - "desktop/**"
+      - ".github/workflows/desktop.yml"
+  pull_request:
+    paths:
+      - "desktop/**"
+      - ".github/workflows/desktop.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: Frontend (typecheck, test, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Test
+        run: npm run test --if-present
+      - name: Build
+        run: npm run build
+
+  rust:
+    name: Rust crates
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+      - name: Test core crates
+        run: >-
+          cargo test
+          -p codeisland-domain
+          -p codeisland-agents
+          -p codeisland-ipc
+          -p codeisland-runtime
+          -p codeisland-hook
+          -p codeisland-integrations
+          -p codeisland-cli
+
+  windows:
+    name: Windows build and tests
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+      - name: Install dependencies
+        run: npm ci
+      - name: Build frontend
+        run: npm run build
+      - name: Test workspace
+        working-directory: desktop/src-tauri
+        run: cargo test --workspace
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2"
+      - name: Prepare hook sidecars
+        shell: pwsh
+        run: ./scripts/prepare-sidecar.ps1
+      - name: Build executable (no bundle)
+        run: cargo tauri build --no-bundle
+
+  bundle:
+    name: Bundle release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+      - name: Install dependencies
+        run: npm ci
+      - name: Prepare hook sidecars
+        shell: pwsh
+        run: ./scripts/prepare-sidecar.ps1
+      - name: Build and publish bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: "CodeIsland Desktop ${{ github.ref_name }}"
+          releaseBody: "Windows installers for CodeIsland Desktop ${{ github.ref_name }}."
+          releaseDraft: true
+          prerelease: false
+          args: --bundles nsis,msi
+      - name: Generate latest.json
+        shell: pwsh
+        run: |
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $version = $package.version
+          $nsis = Get-ChildItem -Recurse -Path src-tauri/target/release/bundle/nsis -Filter *.exe |
+            Select-Object -First 1
+          $platforms = [ordered]@{}
+          if ($nsis) {
+            $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME/$($nsis.Name)"
+            $platforms["windows-x86_64"] = [ordered]@{
+              signature = ""
+              url       = $url
+            }
+          }
+          $latest = [ordered]@{
+            version   = $version
+            notes     = "CodeIsland Desktop $version"
+            pub_date  = (Get-Date).ToUniversalTime().ToString("o")
+            platforms = $platforms
+          }
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          $latest | ConvertTo-Json -Depth 6 | Set-Content artifacts/latest.json -Encoding UTF8
+      - name: Upload latest.json to release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload $env:GITHUB_REF_NAME artifacts/latest.json --clobber
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeisland-desktop-windows
+          path: |
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+            desktop/artifacts/latest.json
+          if-no-files-found: error

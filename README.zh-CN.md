@@ -31,6 +31,8 @@
   <img src="docs/images/readme-hero-zh.png" width="760" alt="从 MacBook 刘海展开的 CodeIsland，显示 Claude Code、Codex、Cursor 和 Gemini CLI 的会话">
 </p>
 
+> **Windows：** 独立的 Tauri 2 + React 重写版位于 [`desktop/`](desktop/README.md)，面向 Windows 10/11，与 macOS 发布通道分开构建和分发。
+
 ## 为什么需要 CodeIsland？
 
 编码 Agent 大部分时间不是在干活，就是在等你——而你只有切到它的窗口才知道是哪种。CodeIsland 把刘海变成所有 Agent 的实时状态栏：哪个会话在思考、哪个在等审批、哪个刚跑完，一目了然。审批和提问直接在刘海上处理，或者点一下跳到对应的终端标签页。

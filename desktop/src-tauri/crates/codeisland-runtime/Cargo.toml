@@ -1,0 +1,22 @@
+[package]
+name = "codeisland-runtime"
+version = "0.1.0"
+edition = "2024"
+description = "Session runtime, persistence, transcript tailers and IPC glue"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "fs", "macros", "io-util", "process"] }
+codeisland-domain = { path = "../codeisland-domain" }
+codeisland-ipc = { path = "../codeisland-ipc" }
+codeisland-agents = { path = "../codeisland-agents" }
+codeisland-integrations = { path = "../codeisland-integrations" }
+dirs = "6"
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+thiserror = "2"
+tracing = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Registry", "Win32_System_Threading"] }

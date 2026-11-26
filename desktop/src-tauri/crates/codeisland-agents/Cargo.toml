@@ -1,0 +1,17 @@
+[package]
+name = "codeisland-agents"
+version = "0.1.0"
+edition = "2024"
+description = "Agent definitions, payload normalization and hook installation"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = "0.9"
+toml_edit = "0.25"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+codeisland-domain = { path = "../codeisland-domain" }
+dirs = "6"
+thiserror = "2"
+tracing = "0.1"

@@ -1,0 +1,126 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: "Silkscreen";
+  src: url("/fonts/Silkscreen-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/*
+ * CodeIsland pixel theme, tuned against the macOS island: pure black shell,
+ * charcoal cards with a coloured status rail, Silkscreen labels and JetBrains
+ * Mono body text.
+ */
+@theme {
+  --color-island: #050506;
+  --color-card: #101012;
+  --color-card-hover: #16161a;
+  --color-raised: #1a1a1e;
+  --color-raised-hover: #202026;
+  --color-line: #232328;
+  --color-line-bright: #35353c;
+  --color-ink: #f7f7f8;
+  --color-muted: #9e9e9e;
+  --color-dim: #666666;
+  --color-accent: #ff9933;
+  --color-info: #7dd3fc;
+  --color-success: #4dd966;
+  --color-danger: #ff616b;
+  --color-warn: #ff9933;
+  --color-violet: #e699e6;
+  --color-branch: #b8b8c0;
+
+  --font-pixel: "Silkscreen", ui-monospace, monospace;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+    monospace;
+
+  --radius-card: 16px;
+  --radius-island: 24px;
+}
+
+:root {
+  color-scheme: dark;
+  --pixel-shadow: #000000;
+  --rail: var(--color-dim);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --color-island: #f4f1ea;
+  --color-card: #fffdf8;
+  --color-card-hover: #f8f3ea;
+  --color-raised: #efe9dd;
+  --color-raised-hover: #e7dfd0;
+  --color-line: #d8d0c0;
+  --color-line-bright: #b9ae99;
+  --color-ink: #1c1a17;
+  --color-muted: #6b655c;
+  --color-dim: #9a9286;
+  --color-accent: #b45309;
+  --color-info: #0369a1;
+  --color-success: #15803d;
+  --color-danger: #b91c1c;
+  --color-warn: #a16207;
+  --color-violet: #7e22ce;
+  --color-branch: #6d28d9;
+  --pixel-shadow: #c9c0af;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    background: transparent;
+  }
+
+  body {
+    margin: 0;
+    color: var(--color-ink);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+    color: inherit;
+  }
+
+  button {
+    cursor: pointer;
+  }
+
+  ::selection {
+    background: var(--color-accent);
+    color: var(--color-island);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  a {
+    color: var(--color-info);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+}
