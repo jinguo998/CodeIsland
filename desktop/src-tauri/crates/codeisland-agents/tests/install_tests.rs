@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::Path;
 
 use codeisland_agents::{
     AgentDefinition, HookFormat, custom_status, definition, definitions, detect_all, install_at,
@@ -514,12 +515,10 @@ fn openclaw_install_writes_the_pack_and_registers_it() {
     let config_path = home.join(".openclaw").join("openclaw.json");
     let config: Value =
         serde_json::from_str(&fs::read_to_string(&config_path).expect("config")).expect("json");
-    let dir = plugin_dir.display().to_string();
-    assert!(config["plugins"]["load"]["paths"]
-        .as_array()
-        .expect("paths")
-        .iter()
-        .any(|entry| entry == &Value::String(dir.clone())));
+    let paths = config["plugins"]["load"]["paths"].as_array().expect("paths");
+    assert_eq!(paths.len(), 1);
+    let registered_dir = Path::new(paths[0].as_str().expect("plugin directory path"));
+    assert_eq!(registered_dir, plugin_dir);
     assert_eq!(config["plugins"]["entries"]["codeisland"]["enabled"], true);
 
     // A second install is a no-op, including the registration list.
