@@ -1,0 +1,7 @@
+{
+  "session_id": "e2e-session",
+  "transcript_path": "C:\\Users\\XXX\\.claude\\projects\\demo\\e2e.jsonl",
+  "cwd": "C:\\Users\\XXX\\demo",
+  "hook_event_name": "SessionStart",
+  "source": "startup"
+}

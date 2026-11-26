@@ -1,0 +1,9 @@
+{
+  "session_id": "e2e-codex",
+  "cwd": "C:\\Users\\XXX\\demo",
+  "hook_event_name": "PermissionRequest",
+  "tool_name": "shell",
+  "tool_input": {
+    "command": "dotnet test"
+  }
+}

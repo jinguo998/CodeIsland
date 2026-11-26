@@ -1,0 +1,29 @@
+[package]
+name = "codeisland-ipc"
+version = "0.1.0"
+edition = "2024"
+description = "Named-pipe / Unix-socket transport for CodeIsland"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tokio = { version = "1", features = ["net", "io-util", "rt", "sync", "time", "macros"] }
+codeisland-domain = { path = "../codeisland-domain" }
+thiserror = "2"
+tracing = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+  "Win32_System_Memory",
+  "Win32_Storage_FileSystem",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
