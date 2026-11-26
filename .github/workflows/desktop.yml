@@ -89,14 +89,14 @@ jobs:
         run: npm ci
       - name: Build frontend
         run: npm run build
+      - name: Prepare hook sidecars
+        shell: pwsh
+        run: ./scripts/prepare-sidecar.ps1
       - name: Test workspace
         working-directory: desktop/src-tauri
         run: cargo test --workspace
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2"
-      - name: Prepare hook sidecars
-        shell: pwsh
-        run: ./scripts/prepare-sidecar.ps1
       - name: Build executable (no bundle)
         run: cargo tauri build --no-bundle
 
