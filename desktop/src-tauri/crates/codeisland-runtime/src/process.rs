@@ -88,24 +88,7 @@ mod tests {
 /// The checked-out branch for `cwd`, read from the nearest `.git/HEAD`.
 /// Detached HEADs report the short commit hash.
 pub fn git_branch(cwd: &str) -> Option<String> {
-    let mut dir = std::path::PathBuf::from(cwd);
-    for _ in 0..64 {
-        let head = dir.join(".git").join("HEAD");
-        if let Ok(text) = std::fs::read_to_string(&head) {
-            let text = text.trim();
-            if let Some(rest) = text.strip_prefix("ref: refs/heads/") {
-                if !rest.is_empty() {
-                    return Some(rest.to_owned());
-                }
-            } else if !text.is_empty() {
-                return Some(text.chars().take(7).collect());
-            }
-        }
-        if !dir.pop() {
-            break;
-        }
-    }
-    None
+    codeisland_swift::call(c"git.branch", cwd)
 }
 
 #[cfg(windows)]

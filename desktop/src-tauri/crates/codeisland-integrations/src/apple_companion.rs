@@ -9,8 +9,9 @@ use unicode_segmentation::UnicodeSegmentation;
 
 pub const SERVICE_UUID: u128 = 0x6D951BA3_8F41_4C45_9D8A_12085E0D7A10;
 pub const NOTIFY_UUID: u128 = 0x25C1B67B_E903_4A0C_8A78_3EE8AB7317B7;
+#[cfg(test)]
 const HEADER_BYTES: usize = 15;
-const MAX_BODY_BYTES: usize = 120;
+#[cfg(test)]
 const MAX_CHUNKS: usize = 64;
 const SECRET_PROMPT: &str = "Sensitive prompt — answer on this computer";
 
@@ -218,31 +219,9 @@ impl CompanionState {
     /// The iPhone central accepts at most 64 chunks. Fit the available ATT
     /// size by dropping optional previews only if a client negotiated a small MTU.
     pub fn bluetooth_frames(&self, max_notification_bytes: usize) -> Vec<Vec<u8>> {
-        let body_size = max_notification_bytes.saturating_sub(HEADER_BYTES).min(MAX_BODY_BYTES);
-        if body_size == 0 {
-            return Vec::new();
-        }
-        let mut summary = BluetoothSummary::from(self);
-        let budget = body_size * MAX_CHUNKS;
-        loop {
-            let Ok(bytes) = serde_json::to_vec(&summary) else {
-                return Vec::new();
-            };
-            if bytes.len() <= budget {
-                return make_chunks(self.sequence, &bytes, body_size);
-            }
-            if summary.sessions.pop().is_some()
-                || summary.message.take().is_some()
-                || summary.question_header.take().is_some()
-                || summary.question_text.take().is_some()
-                || summary.workspace_name.take().is_some()
-                || summary.tool_name.take().is_some()
-                || summary.session_id.take().is_some()
-            {
-                continue;
-            }
-            return Vec::new();
-        }
+        codeisland_swift::call(c"companion.frames", serde_json::json!({
+            "payload": self, "maximum": max_notification_bytes.min(i32::MAX as usize),
+        }))
     }
 }
 
@@ -319,89 +298,6 @@ fn truncate(text: &str, limit: usize, suffix: &str) -> String {
 
 fn date(time: DateTime<Utc>) -> String {
     time.to_rfc3339_opts(SecondsFormat::Secs, true)
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BluetoothSummary {
-    version: u8,
-    sequence: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    session_id: Option<String>,
-    source: String,
-    status: CompanionStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    workspace_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pending_action: Option<PendingAction>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    question_header: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    question_text: Option<String>,
-    sessions: Vec<BluetoothSession>,
-    updated_at: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BluetoothSession {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    session_id: Option<String>,
-    source: String,
-    status: CompanionStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    workspace_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
-    updated_at: String,
-}
-
-impl From<&CompanionState> for BluetoothSummary {
-    fn from(state: &CompanionState) -> Self {
-        let clipped = |value: Option<&str>, limit| value.map(|value| truncate(value, limit, "…"));
-        Self {
-            version: state.version,
-            sequence: state.sequence,
-            session_id: clipped(state.session_id.as_deref(), 96),
-            source: state.source.clone(),
-            status: state.status,
-            tool_name: clipped(state.tool_name.as_deref(), 64),
-            workspace_name: clipped(state.workspace_name.as_deref(), 64),
-            message: clipped(state.messages.last().map(|message| message.text.as_str()), 220),
-            pending_action: state.pending_action,
-            question_header: clipped(state.question.as_ref().and_then(|question| question.header.as_deref()), 40),
-            question_text: clipped(state.question.as_ref().map(|question| question.question.as_str()), 180),
-            sessions: state.sessions.iter().take(5).map(|session| BluetoothSession {
-                session_id: clipped(session.session_id.as_deref(), 96),
-                source: session.source.clone(),
-                status: session.status,
-                tool_name: clipped(session.tool_name.as_deref(), 48),
-                workspace_name: clipped(session.workspace_name.as_deref(), 48),
-                message: clipped(session.message.as_deref(), 120),
-                updated_at: session.updated_at.clone(),
-            }).collect(),
-            updated_at: state.updated_at.clone(),
-        }
-    }
-}
-
-fn make_chunks(sequence: u64, bytes: &[u8], body_size: usize) -> Vec<Vec<u8>> {
-    let total = bytes.len().div_ceil(body_size) as u16;
-    bytes.chunks(body_size).enumerate().map(|(index, body)| {
-        let mut frame = Vec::with_capacity(HEADER_BYTES + body.len());
-        frame.extend_from_slice(&[0x43, 0x49, 0x01]);
-        frame.extend_from_slice(&sequence.to_be_bytes());
-        frame.extend_from_slice(&(index as u16).to_be_bytes());
-        frame.extend_from_slice(&total.to_be_bytes());
-        frame.extend_from_slice(body);
-        frame
-    }).collect()
 }
 
 #[cfg(test)]

@@ -116,10 +116,14 @@ try {
         throw "no release artifacts were produced under $bundleDir"
     }
 
+    $swiftRuntime = Join-Path $OutputDir "swift-core"
+    Copy-Item -LiteralPath (Join-Path $targetDir "swift-core") -Destination $swiftRuntime -Recurse
+    $files += @(Get-ChildItem -LiteralPath $swiftRuntime -File | ForEach-Object { $_.FullName })
+
     $entries = foreach ($file in $files) {
         $item = Get-Item $file
         [ordered]@{
-            name   = $item.Name
+            name   = $item.FullName.Substring($OutputDir.Length + 1).Replace('\', '/')
             size   = $item.Length
             sha256 = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
         }

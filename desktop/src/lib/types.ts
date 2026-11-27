@@ -128,6 +128,7 @@ export interface SessionSnapshot {
   claude_desktop_session_id?: string | null;
   tool_use_id?: string | null;
   model?: string | null;
+  model_label?: string;
   reasoning?: string | null;
   recap?: string | null;
   error?: string | null;
@@ -344,6 +345,7 @@ export interface UiState {
   follow_up_hint_active?: boolean;
   follow_up_hint_pulse?: number;
   display_asleep?: boolean;
+  quiet_hours_active?: boolean;
   idle_session_removal_groups?: string[][];
   store: StoreSnapshot;
   settings: AppSettings;

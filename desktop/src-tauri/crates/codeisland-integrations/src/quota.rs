@@ -3,15 +3,12 @@
 //! Reads `%USERPROFILE%/.claude/projects/**/*.jsonl` (or `$CLAUDE_CONFIG_DIR`)
 //! and sums token usage over the last five hours and local calendar day.
 
-use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
-use chrono::{DateTime, Local, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-const SPARKLINE_HOURS: usize = 12;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsageTotals {
@@ -23,14 +20,6 @@ pub struct UsageTotals {
 }
 
 impl UsageTotals {
-    fn add(&mut self, other: Self) {
-        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
-        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
-        self.cache_creation_tokens = self.cache_creation_tokens.saturating_add(other.cache_creation_tokens);
-        self.cache_read_tokens = self.cache_read_tokens.saturating_add(other.cache_read_tokens);
-        self.message_count = self.message_count.saturating_add(other.message_count);
-    }
-
     fn total(self) -> u64 {
         self.input_tokens.saturating_add(self.output_tokens)
             .saturating_add(self.cache_creation_tokens)
@@ -55,17 +44,8 @@ pub struct QuotaSnapshot {
 }
 
 #[derive(Default)]
-struct FileUsage {
-    consumed_bytes: u64,
-    seen_messages: HashSet<String>,
-    entries: Vec<(DateTime<Utc>, UsageTotals)>,
-}
-
-type UsageCache = HashMap<PathBuf, FileUsage>;
-
-#[derive(Default)]
 struct ScanState {
-    files: UsageCache,
+    files: codeisland_swift::Context,
     last_scan: Option<(Vec<PathBuf>, DateTime<Utc>, Option<QuotaSnapshot>)>,
 }
 
@@ -84,7 +64,7 @@ pub fn scan_in(claude_home: &Path, now: DateTime<Utc>) -> Option<QuotaSnapshot> 
 }
 
 pub fn scan_roots(roots: &[PathBuf], now: DateTime<Utc>) -> Option<QuotaSnapshot> {
-    scan_with_cache(roots, now, &mut UsageCache::new())
+    scan_with_cache(roots, now, &codeisland_swift::Context::default())
 }
 
 /// Retain each transcript's consumed offset while the island is open.
@@ -97,136 +77,31 @@ pub fn scan_roots_cached(roots: &[PathBuf], now: DateTime<Utc>) -> Option<QuotaS
     {
         return snapshot.clone();
     }
-    let snapshot = scan_with_cache(roots, now, &mut cache.files);
+    let snapshot = scan_with_cache(roots, now, &cache.files);
     cache.last_scan = Some((roots.to_vec(), now, snapshot.clone()));
     snapshot
 }
 
-fn scan_with_cache(roots: &[PathBuf], now: DateTime<Utc>, cache: &mut UsageCache) -> Option<QuotaSnapshot> {
-    let midnight = now.with_timezone(&Local).date_naive().and_hms_opt(0, 0, 0)
-        .and_then(|date| Local.from_local_datetime(&date).earliest())
-        .map(|date| date.with_timezone(&Utc))
-        .unwrap_or(now - chrono::Duration::days(1));
-    let five_hours_ago = now - chrono::Duration::hours(5);
-    let cutoff = midnight.min(now - chrono::Duration::hours(SPARKLINE_HOURS as i64));
-    let mut last_5h = UsageTotals::default();
-    let mut today = UsageTotals::default();
-    let mut hourly_output_tokens = vec![0u64; SPARKLINE_HOURS];
-    let mut active_files = HashSet::new();
-    let mut scanned_dirs = HashSet::new();
-    for claude_home in roots {
-        let Ok(projects) = claude_home.join("projects").canonicalize() else {
-            continue;
-        };
-        if !scanned_dirs.insert(projects.clone()) {
-            continue;
-        }
-        let Ok(entries) = std::fs::read_dir(&projects) else { continue };
-        for project in entries.flatten() {
-            let Ok(files) = std::fs::read_dir(project.path()) else { continue };
-            for file in files.flatten() {
-                let path = file.path();
-                if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-                    continue;
-                }
-                let Ok(metadata) = std::fs::metadata(&path) else { continue };
-                if metadata.modified().is_ok_and(|modified| DateTime::<Utc>::from(modified) < cutoff) {
-                    continue;
-                }
-                let usage = cache.entry(path.clone()).or_default();
-                if metadata.len() < usage.consumed_bytes {
-                    *usage = FileUsage::default();
-                }
-                if metadata.len() > usage.consumed_bytes && consume_file(&path, usage).is_err() {
-                    continue;
-                }
-                active_files.insert(path);
-                usage.entries.retain(|(timestamp, _)| *timestamp >= cutoff);
-                for &(timestamp, totals) in &usage.entries {
-                    if timestamp > now {
-                        continue;
-                    }
-                    if timestamp >= five_hours_ago {
-                        last_5h.add(totals);
-                    }
-                    if timestamp >= midnight {
-                        today.add(totals);
-                    }
-                    let age = (now - timestamp).num_hours() as usize;
-                    if age < SPARKLINE_HOURS {
-                        let bucket = &mut hourly_output_tokens[SPARKLINE_HOURS - 1 - age];
-                        *bucket = bucket.saturating_add(totals.output_tokens);
-                    }
-                }
-            }
-        }
+fn scan_with_cache(roots: &[PathBuf], now: DateTime<Utc>, cache: &codeisland_swift::Context) -> Option<QuotaSnapshot> {
+    #[derive(Deserialize)]
+    struct Totals {
+        last_5h: UsageTotals,
+        today: UsageTotals,
+        hourly_output_tokens: Vec<u64>,
     }
-    cache.retain(|path, _| active_files.contains(path));
-    if active_files.is_empty() {
-        return None;
-    }
-
+    let paths: Vec<_> = roots.iter().map(|path| path.to_string_lossy()).collect();
+    let result: Totals = cache.call::<Option<Totals>>(c"scanUsage",
+        serde_json::json!({ "roots": paths, "now": now.timestamp_micros() }))?;
     Some(QuotaSnapshot {
         plan: roots.iter().find_map(|root| read_plan(root)),
-        used_today: today.total(),
+        used_today: result.today.total(),
         limit: None,
-        last_5h,
-        today,
-        hourly_output_tokens,
+        last_5h: result.last_5h,
+        today: result.today,
+        hourly_output_tokens: result.hourly_output_tokens,
     })
 }
 
-fn consume_file(path: &Path, usage: &mut FileUsage) -> std::io::Result<()> {
-    let mut file = BufReader::new(std::fs::File::open(path)?);
-    file.seek(SeekFrom::Start(usage.consumed_bytes))?;
-    let mut bytes = Vec::new();
-    loop {
-        bytes.clear();
-        let count = file.read_until(b'\n', &mut bytes)?;
-        if bytes.last() != Some(&b'\n') {
-            break;
-        }
-        usage.consumed_bytes += count as u64;
-        let Ok(line) = std::str::from_utf8(&bytes) else { continue };
-        if !line.contains("\"assistant\"") || !line.contains("\"usage\"") {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if value.get("type").and_then(|kind| kind.as_str()) != Some("assistant") {
-            continue;
-        }
-        let message = &value["message"];
-        let (Some(timestamp), Some(id), Some(fields)) = (
-            value["timestamp"].as_str().and_then(parse_timestamp),
-            message["id"].as_str(),
-            message["usage"].as_object(),
-        ) else {
-            continue;
-        };
-        if usage.seen_messages.insert(id.to_owned()) {
-            let field = |key: &str| fields.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0);
-            usage.entries.push((timestamp, UsageTotals {
-                input_tokens: field("input_tokens"),
-                output_tokens: field("output_tokens"),
-                cache_creation_tokens: field("cache_creation_input_tokens"),
-                cache_read_tokens: field("cache_read_input_tokens"),
-                message_count: 1,
-            }));
-        }
-    }
-    Ok(())
-}
-
-fn parse_timestamp(raw: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(raw)
-        .ok()
-        .map(|timestamp| timestamp.with_timezone(&Utc))
-}
-
-/// Claude Code's config directory: `$CLAUDE_CONFIG_DIR`, else
-/// `%USERPROFILE%\.claude` on Windows, else `$HOME/.claude`.
 pub fn claude_home() -> Option<PathBuf> {
     if let Some(raw) = std::env::var_os("CLAUDE_CONFIG_DIR") {
         let path = PathBuf::from(raw);
@@ -275,6 +150,7 @@ fn read_plan(claude_home: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Local;
     use super::*;
     use std::fs;
     use std::path::PathBuf;
@@ -388,7 +264,7 @@ mod tests {
         write_transcript(&root, "session.jsonl", &lines);
         let claude_home = root.join(".claude");
         let roots = [claude_home.clone()];
-        let mut cache = UsageCache::new();
+        let mut cache = codeisland_swift::Context::default();
         let snapshot = scan_with_cache(&roots, now, &mut cache).unwrap();
         assert_eq!(snapshot.last_5h.message_count, 1);
         assert_eq!(snapshot.hourly_output_tokens[9], 20);

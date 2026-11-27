@@ -1,10 +1,7 @@
 //! Claude Desktop's Code tab routes by host session ID, distinct from the CLI UUID.
 
 pub fn valid_id(id: &str) -> bool {
-    id.strip_prefix("local_").is_some_and(|body| {
-        (1..=64).contains(&body.len())
-            && body.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-    })
+    codeisland_swift::call(c"claudeHostID", id)
 }
 
 #[cfg(test)]

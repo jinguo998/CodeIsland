@@ -886,9 +886,11 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "codeisland-domain",
+ "codeisland-swift",
  "dirs 6.0.0",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "toml 0.9.12+spec-1.1.0",
  "toml_edit 0.25.19+spec-1.1.0",
@@ -947,6 +949,7 @@ name = "codeisland-domain"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "codeisland-swift",
  "indexmap 2.14.2",
  "regex",
  "serde",
@@ -978,14 +981,12 @@ name = "codeisland-integrations"
 version = "0.1.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
  "btleplug",
  "chrono",
  "codeisland-domain",
+ "codeisland-swift",
  "futures-util",
- "percent-encoding",
  "reqwest 0.12.28",
- "ring",
  "russh",
  "russh-sftp",
  "serde",
@@ -1022,14 +1023,25 @@ dependencies = [
  "codeisland-domain",
  "codeisland-integrations",
  "codeisland-ipc",
+ "codeisland-swift",
  "dirs 6.0.0",
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "codeisland-swift"
+version = "0.1.0"
+dependencies = [
+ "libloading",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -58,12 +58,9 @@ impl PushChannel {
     }
 
     pub fn rate_limits(self) -> &'static [(usize, u64)] {
-        match self {
-            Self::DingTalk | Self::WeCom => &[(18, 60)],
-            Self::Lark => &[(90, 60), (4, 1)],
-            Self::Slack => &[(1, 1)],
-            _ => &[],
-        }
+        static LIMITS: std::sync::LazyLock<HashMap<String, Vec<(usize, u64)>>> =
+            std::sync::LazyLock::new(|| codeisland_swift::call(c"push.rateLimits", ()));
+        LIMITS.get(crate::push_channels::native_name(self)).map_or(&[], Vec::as_slice)
     }
 }
 
@@ -306,6 +303,10 @@ impl PushNotifier {
         })
     }
 
+    pub fn includes_details(&self) -> bool {
+        self.config.as_ref().is_none_or(|config| config.include_details)
+    }
+
     pub fn accepts(&self, kind: PushKind, reminder: bool) -> bool {
         let event = if reminder {
             "reminder"
@@ -373,14 +374,17 @@ impl PushNotifier {
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
         let request = self.build_content(kind, title, headline, body)?;
-        let (result, retry) = exchange(&client, self.channel, &request).await;
-        if !reminder && matches!(kind, PushKind::Approval | PushKind::Question | PushKind::Error)
-            && let Some(delay) = retry
-        {
+        let event = if reminder || kind == PushKind::DisplayOnlyWait {
+            "reminder"
+        } else {
+            crate::push_channels::event_name(kind)
+        };
+        let (result, retry) = exchange(&client, self.channel, &request, event).await;
+        if let Some(delay) = retry {
             tokio::time::sleep(delay).await;
             // Signed chat requests get a fresh timestamp.
             let request = self.build_content(kind, title, headline, body)?;
-            return exchange(&client, self.channel, &request).await.0;
+            return exchange(&client, self.channel, &request, event).await.0;
         }
         result
     }
@@ -407,43 +411,40 @@ async fn exchange(
     client: &reqwest::Client,
     channel: PushChannel,
     request: &PushRequest,
+    event: &str,
 ) -> (Result<(), PushError>, Option<Duration>) {
-    let fallback_delay = Duration::from_secs(5);
     let response = tokio::time::timeout(Duration::from_secs(8), send_request(client, request)).await;
     let (status, retry_after, body) = match response {
-        Err(_) => return (Err(PushError::Timeout), Some(fallback_delay)),
-        Ok(Err(error @ PushError::Http(_))) => return (Err(error), Some(fallback_delay)),
+        Err(_) => return (Err(PushError::Timeout), retry_delay(event, None, None, &[])),
+        Ok(Err(error @ PushError::Http(_))) => return (Err(error), retry_delay(event, None, None, &[])),
         Ok(Err(error)) => return (Err(error), None),
         Ok(Ok(response)) => response,
     };
     let code = status.as_u16();
     if status.is_success() {
-        let result = crate::push_channels::accepted(channel, &body).then_some(())
+        let result = crate::push_channels::accepted(channel, code, &body).then_some(())
             .ok_or(PushError::ServiceRejected);
         return (result, None);
     }
-    let retry = match code {
-        429 => {
-            let delay = retry_after.or_else(|| {
-                let json = serde_json::from_slice::<serde_json::Value>(&body).ok()?;
-                json["parameters"]["retry_after"].as_u64().map(Duration::from_secs)
-            }).unwrap_or(fallback_delay);
-            Some(delay.clamp(Duration::from_secs(1), Duration::from_secs(30)))
-        }
-        500..=599 => Some(fallback_delay),
-        _ => None,
-    };
-    (Err(PushError::Rejected(code)), retry)
+    (Err(PushError::Rejected(code)), retry_delay(event, Some(code), retry_after, &body))
+}
+
+fn retry_delay(event: &str, status: Option<u16>, after: Option<String>, body: &[u8]) -> Option<Duration> {
+    let seconds: Option<f64> = codeisland_swift::call(c"push.retry", serde_json::json!({
+        "kind": event, "status": status, "after": after,
+        "body": if status == Some(429) { String::from_utf8_lossy(body) } else { "".into() },
+    }));
+    seconds.map(Duration::from_secs_f64)
 }
 
 async fn send_request(
     client: &reqwest::Client,
     request: &PushRequest,
-) -> Result<(reqwest::StatusCode, Option<Duration>, Vec<u8>), PushError> {
+) -> Result<(reqwest::StatusCode, Option<String>, Vec<u8>), PushError> {
     let mut url = Url::parse(&request.url)
         .map_err(|_| PushError::InvalidTarget("expected an HTTP or HTTPS URL".into()))?;
     let method = if request.method == "GET" { reqwest::Method::GET } else { reqwest::Method::POST };
-    for hop in 0..=5 {
+    for hop in 0.. {
         let mut builder = client.request(method.clone(), url.clone());
         for (name, value) in &request.headers {
             builder = builder.header(name.as_str(), value.as_str());
@@ -458,33 +459,29 @@ async fn send_request(
         {
             let next = location.to_str().ok().and_then(|location| url.join(location).ok())
                 .filter(|next| {
-                    hop < 5 && matches!(next.scheme(), "http" | "https")
-                        && next.host_str() == url.host_str()
-                        && (url.scheme() != "https" || next.scheme() == "https")
-                        && next.username().is_empty() && next.password().is_none()
+                    next.username().is_empty() && next.password().is_none()
+                        && codeisland_swift::call(c"push.redirect", serde_json::json!({
+                            "from": url.as_str(), "to": next.as_str(), "count": hop,
+                        }))
                 }).ok_or(PushError::RedirectRefused)?;
             url = next;
             continue;
         }
         let retry_after = response.headers().get(reqwest::header::RETRY_AFTER)
-            .and_then(|value| value.to_str().ok()).and_then(|value| {
-                value.parse::<u64>().ok().map(Duration::from_secs).or_else(|| {
-                    let date = chrono::DateTime::parse_from_rfc2822(value).ok()?;
-                    Some((date.with_timezone(&chrono::Utc) - chrono::Utc::now()).to_std().unwrap_or_default())
-                })
-            });
+            .and_then(|value| value.to_str().ok()).map(str::to_owned);
         let body = response.bytes().await.map_err(|error| error.without_url())?.to_vec();
         return Ok((status, retry_after, body));
     }
     Err(PushError::RedirectRefused)
 }
 
-/// Deduplicates by event id and rate-limits to at most one push per session
-/// every five seconds. Both checks are local; nothing is persisted.
+/// Tracks IPC event replays and asks the shared Swift policy to admit events
+/// and reserve delivery slots for individual services.
 #[derive(Debug)]
 pub struct PushGate {
     seen: HashSet<String>,
-    last_sent: HashMap<String, Instant>,
+    core: codeisland_swift::Context,
+    clock: Option<Instant>,
     window: Duration,
 }
 
@@ -496,43 +493,51 @@ impl Default for PushGate {
 
 impl PushGate {
     pub fn new() -> Self {
-        Self {
-            seen: HashSet::new(),
-            last_sent: HashMap::new(),
-            window: Duration::from_secs(5),
-        }
+        Self::with_window(Duration::from_secs(5))
     }
 
     pub fn with_window(window: Duration) -> Self {
-        Self {
-            seen: HashSet::new(),
-            last_sent: HashMap::new(),
-            window,
-        }
+        Self { seen: HashSet::new(), core: codeisland_swift::Context::default(), clock: None, window }
+    }
+
+    fn seconds(&mut self, now: Instant) -> f64 {
+        now.saturating_duration_since(*self.clock.get_or_insert(now)).as_secs_f64()
     }
 
     pub fn should_send(&mut self, event_id: &str, session_id: &str) -> bool {
         self.should_send_at(event_id, session_id, Instant::now())
     }
 
-    /// `now` is injectable so the rate limit can be tested without sleeping.
     pub fn should_send_at(&mut self, event_id: &str, session_id: &str, now: Instant) -> bool {
-        if self.seen.contains(event_id) {
-            return false;
+        self.admit(event_id, session_id, "completion", None, Some(self.window), now)
+    }
+
+    pub fn should_send_event(&mut self, event_id: &str, session_id: &str, kind: PushKind, reminder: bool) -> bool {
+        let name = if reminder { "reminder" } else { crate::push_channels::event_name(kind) };
+        let request = matches!(kind, PushKind::Approval | PushKind::Question | PushKind::DisplayOnlyWait).then_some(event_id);
+        self.admit(event_id, session_id, name, request, None, Instant::now())
+    }
+
+    fn admit(&mut self, event_id: &str, session_id: &str, kind: &str, key: Option<&str>, window: Option<Duration>, now: Instant) -> bool {
+        if self.seen.contains(event_id) { return false; }
+        let now = self.seconds(now);
+        let allowed = self.core.call(c"push.admit", serde_json::json!({
+            "kind": kind, "session": session_id, "key": key, "now": now, "window": window.map(|value| value.as_secs_f64()),
+        }));
+        if allowed {
+            if self.seen.len() >= 4096 { self.seen.clear(); }
+            self.seen.insert(event_id.to_owned());
         }
-        if let Some(last) = self.last_sent.get(session_id) {
-            if now.saturating_duration_since(*last) < self.window {
-                return false;
-            }
-        }
-        // Bound memory on a long-running process.
-        if self.seen.len() >= 4096 {
-            self.seen.clear();
-        }
-        self.last_sent.retain(|_, sent| now.saturating_duration_since(*sent) < self.window);
-        self.seen.insert(event_id.to_owned());
-        self.last_sent.insert(session_id.to_owned(), now);
-        true
+        allowed
+    }
+
+    pub fn reserve_channel(&mut self, channel: PushChannel, must_deliver: bool, queued: Instant) -> Option<Duration> {
+        let now = Instant::now();
+        let timestamp = self.seconds(now);
+        self.core.call::<Option<f64>>(c"push.slot", serde_json::json!({
+            "channel": crate::push_channels::native_name(channel), "mustDeliver": must_deliver,
+            "now": timestamp, "waited": now.saturating_duration_since(queued).as_secs_f64(),
+        })).map(Duration::from_secs_f64)
     }
 
     pub fn has_seen(&self, event_id: &str) -> bool {
@@ -776,6 +781,17 @@ mod tests {
         assert!(gate.should_send_at("e3", "s2", now + Duration::from_secs(4)));
         // Once the window passes the same session may push again.
         assert!(gate.should_send_at("e4", "s1", now + Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn live_gate_shadows_an_error_completion_and_preserves_distinct_approvals() {
+        let mut gate = PushGate::new();
+        assert!(gate.should_send_event("error", "s1", PushKind::Error, false));
+        assert!(!gate.should_send_event("completed", "s1", PushKind::Completion, false));
+        assert!(gate.should_send_event("other-session", "s2", PushKind::Completion, false));
+        assert!(gate.should_send_event("tool-1", "s1", PushKind::Approval, false));
+        assert!(gate.should_send_event("tool-2", "s1", PushKind::Approval, false));
+        assert!(!gate.should_send_event("tool-1", "s1", PushKind::Approval, false));
     }
 
     #[test]

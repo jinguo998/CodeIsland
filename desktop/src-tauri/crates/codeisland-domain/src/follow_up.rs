@@ -3,8 +3,11 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, TimeDelta, Utc};
+use serde::{Serialize, Deserialize};
+use serde_json::json;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Kind {
     Approval,
     Question,
@@ -12,13 +15,6 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub fn max_attempts(self) -> u8 {
-        match self {
-            Self::Approval | Self::Question => 3,
-            Self::Completion => 1,
-        }
-    }
-
     pub fn sound(self, turn_failed: bool) -> &'static str {
         match self {
             Self::Approval | Self::Question => "approval",
@@ -28,20 +24,22 @@ impl Kind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Origin {
     Island,
     DisplayOnly,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Delivery {
     OnTime,
     Deferred,
     CatchUp,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Key {
     pub kind: Kind,
     pub session_id: String,
@@ -56,9 +54,10 @@ impl Key {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reminder {
     pub key: Key,
+    #[serde(with = "chrono::serde::ts_microseconds")]
     pub waiting_since: DateTime<Utc>,
     pub attempt: u8,
     pub origin: Origin,
@@ -67,193 +66,48 @@ pub struct Reminder {
     pub turn_failed: bool,
 }
 
-struct Entry {
-    waiting_since: DateTime<Utc>,
-    anchor: DateTime<Utc>,
-    delivered: u8,
-    owed: bool,
-    done: bool,
-    origin: Origin,
-    request_id: Option<String>,
-    turn_failed: bool,
-}
-
-impl Entry {
-    fn new(now: DateTime<Utc>, origin: Origin, request_id: Option<String>) -> Self {
-        Self {
-            waiting_since: now,
-            anchor: now,
-            delivered: 0,
-            owed: false,
-            done: false,
-            origin,
-            request_id,
-            turn_failed: false,
-        }
-    }
-}
-
 #[derive(Default)]
-pub struct Scheduler {
-    interval: Option<TimeDelta>,
-    entries: HashMap<Key, Entry>,
-}
+pub struct Scheduler(codeisland_swift::Context);
 
 impl Scheduler {
     pub fn set_interval(&mut self, interval: Option<TimeDelta>) {
-        self.interval = interval.filter(|duration| *duration > TimeDelta::zero());
-        if self.interval.is_none() {
-            self.entries.clear();
-        }
+        self.0.call(c"reminder.interval", interval.map(|interval| interval.as_seconds_f64()))
     }
 
-    pub fn is_enabled(&self) -> bool {
-        self.interval.is_some()
-    }
+    pub fn is_enabled(&self) -> bool { self.0.call(c"reminder.enabled", ()) }
+    pub fn has_owed(&self) -> bool { self.0.call(c"reminder.owed", ()) }
 
-    pub fn sync(
-        &mut self,
-        kind: Kind,
-        origin: Origin,
-        waiting: HashMap<String, Option<String>>,
-        now: DateTime<Utc>,
-    ) {
-        if !self.is_enabled() {
-            return;
-        }
-        self.entries.retain(|key, entry| {
-            key.kind != kind || entry.origin != origin || waiting.contains_key(&key.session_id)
-        });
-        for (session_id, request_id) in waiting {
-            let key = Key::new(kind, session_id);
-            if let Some(entry) = self.entries.get_mut(&key)
-                && entry.request_id.as_ref().zip(request_id.as_ref()).is_none_or(|(a, b)| a == b)
-            {
-                entry.origin = origin;
-                if request_id.is_some() {
-                    entry.request_id = request_id;
-                }
-            } else {
-                self.entries.insert(key, Entry::new(now, origin, request_id));
-            }
-        }
+    pub fn sync(&mut self, kind: Kind, origin: Origin, waiting: HashMap<String, Option<String>>, now: DateTime<Utc>) {
+        self.0.call(c"reminder.sync", json!({ "kind": kind, "origin": origin, "waiting": waiting, "now": now.timestamp_micros() }))
     }
 
     pub fn restart_display_only(&mut self, kind: Kind, session_id: &str, now: DateTime<Utc>) {
-        if self.is_enabled() {
-            self.entries.insert(Key::new(kind, session_id), Entry::new(now, Origin::DisplayOnly, None));
-        }
+        self.0.call(c"reminder.restart", json!({ "kind": kind, "id": session_id, "now": now.timestamp_micros(), "failed": false }))
     }
 
     pub fn track_completion(&mut self, session_id: &str, now: DateTime<Utc>, turn_failed: bool) {
-        if self.is_enabled() {
-            let mut entry = Entry::new(now, Origin::Island, None);
-            entry.turn_failed = turn_failed;
-            self.entries.insert(Key::new(Kind::Completion, session_id), entry);
-        }
+        self.0.call(c"reminder.track", json!({ "kind": Kind::Completion, "id": session_id, "now": now.timestamp_micros(), "failed": turn_failed }))
     }
 
-    pub fn silence_session(&mut self, session_id: &str) {
-        self.entries.retain(|key, entry| {
-            if key.session_id != session_id {
-                return true;
-            }
-            entry.done = true;
-            entry.owed = false;
-            entry.delivered = 0;
-            key.kind != Kind::Completion
-        });
-    }
+    pub fn silence_session(&mut self, session_id: &str) { self.0.call(c"reminder.silenceSession", session_id) }
+    pub fn silence_completion(&mut self, session_id: &str) { self.0.call(c"reminder.silenceCompletion", session_id) }
 
-    pub fn silence_completion(&mut self, session_id: &str) {
-        self.entries.remove(&Key::new(Kind::Completion, session_id));
-    }
-
-    pub fn retain_completions(&mut self, retain: impl Fn(&str) -> bool) {
-        self.entries
-            .retain(|key, _| key.kind != Kind::Completion || retain(&key.session_id));
-    }
-
-    pub fn has_owed(&self) -> bool {
-        self.entries.values().any(|entry| entry.owed && !entry.done)
+    pub fn retain_completions(&mut self, ids: &[&str]) {
+        self.0.call(c"reminder.keepCompletions", ids)
     }
 
     pub fn next_wake_date(&self) -> Option<DateTime<Utc>> {
-        let interval = self.interval?;
-        self.entries
-            .values()
-            .filter(|entry| !entry.done && !entry.owed)
-            .map(|entry| entry.anchor + interval)
-            .min()
+        self.0.call::<Option<i64>>(c"reminder.next", ()).and_then(DateTime::from_timestamp_micros)
     }
 
-    pub fn is_current(&self, reminder: &Reminder) -> bool {
-        self.entries.get(&reminder.key).is_some_and(|entry| {
-            entry.waiting_since == reminder.waiting_since
-                && entry.request_id == reminder.request_id
-                && if reminder.delivery == Delivery::Deferred {
-                    entry.owed && entry.delivered + 1 == reminder.attempt
-                } else {
-                    entry.delivered == reminder.attempt
-                }
-        })
-    }
+    pub fn is_current(&self, reminder: &Reminder) -> bool { self.0.call(c"reminder.current", reminder) }
 
-    /// A suppressed reminder that reached nobody should come due again.
     pub fn postpone(&mut self, reminder: &Reminder, now: DateTime<Utc>) {
-        if let Some(entry) = self.entries.get_mut(&reminder.key)
-            && entry.waiting_since == reminder.waiting_since
-            && entry.request_id == reminder.request_id
-            && entry.delivered == reminder.attempt
-        {
-            entry.delivered -= 1;
-            entry.anchor = now;
-            entry.owed = false;
-            entry.done = false;
-        }
+        self.0.call(c"reminder.postpone", json!({ "item": reminder, "now": now.timestamp_micros() }))
     }
 
     pub fn collect_due(&mut self, now: DateTime<Utc>, held: bool) -> Vec<Reminder> {
-        let Some(interval) = self.interval else {
-            return Vec::new();
-        };
-        // Preserve a final completion until the next tick so it can be postponed.
-        self.entries.retain(|key, entry| key.kind != Kind::Completion || !entry.done);
-        let mut reminders = Vec::new();
-        for (key, entry) in &mut self.entries {
-            if entry.done || (held && entry.owed) || (!entry.owed && now < entry.anchor + interval) {
-                continue;
-            }
-            let attempt = entry.delivered + 1;
-            let delivery = if held {
-                Delivery::Deferred
-            } else if entry.owed {
-                Delivery::CatchUp
-            } else {
-                Delivery::OnTime
-            };
-            entry.owed = held;
-            if !held {
-                entry.delivered = attempt;
-                entry.done = attempt >= key.kind.max_attempts();
-                entry.anchor = now;
-            }
-            reminders.push(Reminder {
-                key: key.clone(),
-                waiting_since: entry.waiting_since,
-                attempt,
-                origin: entry.origin,
-                request_id: entry.request_id.clone(),
-                delivery,
-                turn_failed: entry.turn_failed,
-            });
-        }
-        reminders.sort_by(|a, b| {
-            a.key.kind.cmp(&b.key.kind)
-                .then(a.waiting_since.cmp(&b.waiting_since))
-                .then(a.key.session_id.cmp(&b.key.session_id))
-        });
-        reminders
+        self.0.call(c"reminder.collect", json!({ "now": now.timestamp_micros(), "held": held }))
     }
 }
 

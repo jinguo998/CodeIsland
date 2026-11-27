@@ -184,7 +184,7 @@ export function CollapsedStrip({
     ? pathLeaf(current?.cwd) ?? current?.project?.trim()
     : current?.title?.trim();
   const quiet = settings.sound_enabled && settings.quiet_hours_enabled &&
-    inQuietHours(settings.quiet_hours_start, settings.quiet_hours_end);
+    (ui.quiet_hours_active ?? inQuietHours(settings.quiet_hours_start, settings.quiet_hours_end));
 
   if (sessions.length === 0) {
     return (

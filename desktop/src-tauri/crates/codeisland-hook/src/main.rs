@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::time::Duration;
 
 use codeisland_agents::ResponseFormat;
-use codeisland_domain::{AgentEventType, AgentKind};
+use codeisland_domain::AgentKind;
 use codeisland_ipc::{client, ClientMessage, ServerMessage, PROTOCOL_VERSION};
 
 const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 1_000;
@@ -70,7 +70,10 @@ fn run_send(args: &[String]) -> i32 {
         }
     };
 
-    let fallback = fallback_for(&options.source);
+    let admission = codeisland_agents::normalize::local_hook_admission(&options.source, &options.event);
+    if let Some(text) = admission.immediate.as_deref() { emit(text); }
+    if !admission.admitted { return 0; }
+    let fallback = if admission.immediate.is_some() { "" } else { fallback_for(&options.source) };
 
     let raw = match read_payload(&options) {
         Ok(raw) => raw,
@@ -80,47 +83,21 @@ fn run_send(args: &[String]) -> i32 {
             return 0;
         }
     };
-    // The agent spawns one hook process per event, so the parent pid is the
-    // only identity stable across a session when stdin carries no session id.
-    // Inject it into the payload (and pass it explicitly) so normalize can
-    // build `<source>-ppid-<ppid>` instead of the shared "default".
-    let ppid = parent_process_id();
-    let raw = inject_ppid(&raw, ppid);
-
-    // Antigravity fails closed on empty stdout: answer its tool gate before
-    // anything else, exactly like the macOS bridge.
-    let source_tag = options.source.trim_start_matches("codeisland-");
-    if matches!(source_tag, "antigravity" | "google-antigravity")
-        && options.event.eq_ignore_ascii_case("PreToolUse")
-    {
-        emit(r#"{"decision":"ask"}"#);
-        return 0;
-    }
-
-    let cwd = std::env::current_dir()
-        .ok()
-        .map(|path| path.to_string_lossy().into_owned());
-    let mut event = match codeisland_agents::normalize_with_ppid(
-        &options.source,
-        &options.event,
-        &raw,
-        cwd.as_deref(),
-        Some(ppid),
+    let cwd = std::env::current_dir().ok().map(|path| path.to_string_lossy().into_owned());
+    let hook = match codeisland_agents::normalize::prepare_local_hook(
+        &options.source, &options.event, &raw, cwd.as_deref(), parent_process_id(),
     ) {
-        Ok(event) => event,
+        Ok(Some(hook)) => hook,
+        Ok(None) => return 0,
         Err(error) => {
-            debug(&format!("failed to normalize payload: {error:?}"));
+            debug(&format!("failed to normalize payload: {error}"));
             emit(fallback);
             return 0;
         }
     };
-    if event.agent == AgentKind::Claude
-        && let Some(host_id) = env_value("CLAUDE_CODE_HOST_SESSION_ID")
-            .filter(|id| codeisland_domain::claude_desktop_code::valid_id(id))
-        && let Some(payload) = event.payload.as_mut().and_then(serde_json::Value::as_object_mut)
-    {
-        payload.insert("_claude_desktop_session".to_owned(), host_id.into());
-    }
+    if admission.immediate.is_none() && let Some(text) = hook.immediate.as_deref() { emit(text); }
+    let fallback = if hook.immediate.is_some() || hook.cursor { "" } else { fallback };
+    let mut event = hook.event;
     event.wezterm_pane = event.wezterm_pane.or_else(|| env_value("WEZTERM_PANE")?.parse().ok());
     if event.wezterm_pane.is_some() {
         event.terminal_kind = Some("WezTerm".to_owned());
@@ -132,14 +109,12 @@ fn run_send(args: &[String]) -> i32 {
         };
     }
 
-    let waits = matches!(
-        event.event_type,
-        AgentEventType::PermissionRequest | AgentEventType::Question
-    );
+    let waits = event.waits;
+    if !hook.delay.is_zero() { std::thread::sleep(hook.delay); }
     let message = ClientMessage::Event {
         v: PROTOCOL_VERSION,
         id: uuid::Uuid::new_v4().to_string(),
-        source: options.source.clone(),
+        source: event.payload.as_ref().and_then(|p| p["_source"].as_str()).unwrap_or(&options.source).to_owned(),
         event,
         waits,
         timeout_ms: options.timeout_ms,
@@ -162,7 +137,7 @@ fn run_send(args: &[String]) -> i32 {
         Ok(ServerMessage::Decision {
             stdout, exit_code, ..
         }) => {
-            emit(&stdout);
+            if admission.immediate.is_none() && hook.immediate.is_none() { emit(&stdout); }
             exit_code
         }
         Ok(ServerMessage::Ack { .. }) => {
@@ -207,25 +182,6 @@ fn read_payload(options: &SendOptions) -> std::io::Result<String> {
         return Ok(raw);
     }
     Ok(String::new())
-}
-
-/// Add `_ppid` to an object payload. Empty stdin becomes `{"_ppid":N}`;
-/// non-JSON input is left alone so normalize can fail open as before.
-fn inject_ppid(raw: &str, ppid: u32) -> String {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return format!("{{\"_ppid\":{ppid}}}");
-    }
-    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
-        return raw.to_owned();
-    };
-    if let Some(object) = value.as_object_mut() {
-        object
-            .entry("_ppid")
-            .or_insert_with(|| serde_json::Value::from(ppid));
-        return value.to_string();
-    }
-    raw.to_owned()
 }
 
 /// The pid of the process that spawned this hook (the agent CLI).
@@ -484,23 +440,20 @@ mod tests {
     }
 
     #[test]
-    fn ppid_is_injected_without_clobbering_the_payload() {
-        let injected = inject_ppid(r#"{"session_id":"s"}"#, 99);
-        let value: serde_json::Value = serde_json::from_str(&injected).expect("json");
-        assert_eq!(value["session_id"], "s");
-        assert_eq!(value["_ppid"], 99);
+    fn swift_prepares_local_hooks_with_their_original_input_and_parent() {
+        use codeisland_agents::normalize::prepare_local_hook;
+        let hook = prepare_local_hook("claude", "SessionStart", r#"{"session_id":"s","_ppid":7}"#, None, 99).unwrap().unwrap();
+        assert_eq!(hook.event.session_id, "s");
+        assert_eq!(hook.event.payload.unwrap()["_ppid"], 7);
+        let empty = prepare_local_hook("claude", "SessionStart", "", None, 5).unwrap().unwrap();
+        assert_eq!(empty.event.session_id, "claude-ppid-5");
+        assert!(prepare_local_hook("claude", "SessionStart", "not json", None, 5).is_err());
+    }
 
-        // An agent that already reports a ppid keeps its own value.
-        let injected = inject_ppid(r#"{"_ppid":7}"#, 99);
-        let value: serde_json::Value = serde_json::from_str(&injected).expect("json");
-        assert_eq!(value["_ppid"], 7);
-
-        // Empty stdin still gives normalize an identity to fall back on.
-        let value: serde_json::Value = serde_json::from_str(&inject_ppid("", 5)).expect("json");
-        assert_eq!(value["_ppid"], 5);
-
-        // Non-JSON stdin is left untouched (normalize fails open as before).
-        assert_eq!(inject_ppid("not json", 5), "not json");
+    #[test]
+    fn imported_cursor_approval_has_no_desktop_waiter() {
+        let raw = r#"{"session_id":"s","cursor_version":"1","hook_event_name":"PermissionRequest"}"#;
+        assert!(codeisland_agents::normalize::prepare_local_hook("claude", "PermissionRequest", raw, None, 5).unwrap().is_none());
     }
 
     #[test]

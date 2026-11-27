@@ -225,6 +225,46 @@ fn activity_retires_only_matching_request_and_never_resolves_a_question_as_appro
 }
 
 #[test]
+fn completion_matches_the_original_call_input_and_only_its_own_agent() {
+    let mut store = SessionStore::default();
+    let mut start = event("card", AgentEventType::ToolStart);
+    start.agent_id = Some("worker".into());
+    start.tool = Some("propose_branch".into());
+    start.payload = Some(serde_json::json!({"toolCallId":"call", "toolInput":{"branch":"suggested"}}));
+    store.apply(&start);
+
+    let mut request = event("card", AgentEventType::PermissionRequest);
+    request.agent_id = start.agent_id.clone();
+    request.tool = start.tool.clone();
+    request.payload = Some(serde_json::json!({"tool_input":{"branch":"suggested"}}));
+    store.apply(&request);
+
+    let mut end = event("card", AgentEventType::ToolEnd);
+    end.tool = start.tool;
+    end.agent_id = Some("sibling".into());
+    end.payload = Some(serde_json::json!({"toolCallId":"call", "toolInput":{"branch":"edited"}}));
+    store.apply(&end);
+    assert!(store.get_pending(&request.id).is_some());
+    let mut own_end = event("card", AgentEventType::ToolEnd);
+    own_end.agent_id = start.agent_id;
+    own_end.tool = end.tool;
+    own_end.payload = end.payload;
+    store.apply(&own_end);
+    assert!(store.get_pending(&request.id).is_none());
+}
+
+#[test]
+fn equal_tool_ids_with_boolean_and_numeric_arguments_keep_separate_requests() {
+    let mut store = SessionStore::default();
+    for value in [serde_json::json!(true), serde_json::json!(1)] {
+        let mut request = event("card", AgentEventType::PermissionRequest);
+        request.payload = Some(serde_json::json!({"tool_use_id":"call", "tool_input":{"argument":value}}));
+        store.apply(&request);
+    }
+    assert_eq!(store.pending_count(), 2);
+}
+
+#[test]
 fn always_allow_is_session_scoped() {
     let mut store = SessionStore::default();
     store.apply(&event("s1", AgentEventType::SessionStart));
@@ -1035,4 +1075,14 @@ fn explicitly_removed_idle_families_need_fresh_work_to_revive() {
     let mut child_returns = event("child", AgentEventType::Heartbeat);
     child_returns.timestamp = now + Duration::seconds(3);
     assert!(store.apply(&child_returns).applied);
+}
+
+#[test]
+fn publishes_the_original_swift_model_label() {
+    let mut store = SessionStore::default();
+    let mut event = AgentEvent::new("model-card", AgentKind::Claude, AgentEventType::UserPrompt);
+    event.model = Some("claude-sonnet-4-5".into());
+    event.reasoning = Some("high".into());
+    store.apply(&event);
+    assert_eq!(store.snapshot().sessions[0].model_label.as_deref(), Some("Sonnet 4.5 · high"));
 }

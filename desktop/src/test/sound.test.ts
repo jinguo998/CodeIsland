@@ -38,20 +38,13 @@ afterEach(() => {
 });
 
 describe("island sound", () => {
-  it("replays the bundled error cue after 60 quiet seconds per session", () => {
+  it("restarts the bundled audio when the runtime sends another cue", () => {
     vi.stubGlobal("Audio", MockAudio);
-    const playFailure = (sessionId: string, seconds: number) =>
-      sound.playAttentionSound("StopFailure", settings, new Date(seconds * 1_000), sessionId);
-
-    expect(playFailure("session-a", 0)).toBe(true);
-    expect(playFailure("session-a", 59)).toBe(false);
-    expect(playFailure("session-a", 60)).toBe(false);
-    expect(playFailure("session-b", 60)).toBe(true);
-    expect(playFailure("session-a", 120)).toBe(true);
-
+    expect(sound.playAttentionSound("StopFailure", settings)).toBe(true);
+    expect(sound.playAttentionSound("StopFailure", settings)).toBe(true);
     const audio = MockAudio.instances.get("/sounds/8bit_error.wav");
-    expect(audio?.play).toHaveBeenCalledTimes(3);
-    expect(audio?.pause).toHaveBeenCalledTimes(2);
+    expect(audio?.play).toHaveBeenCalledTimes(2);
+    expect(audio?.pause).toHaveBeenCalledOnce();
     expect(audio?.volume).toBe(0.5);
   });
 
@@ -133,7 +126,7 @@ describe("island sound", () => {
     expect(listeners.size).toBe(2);
     expect(play).toHaveBeenCalledOnce();
     expect(play).toHaveBeenCalledWith(
-      "PermissionRequest", expect.objectContaining({ sound_enabled: true }), undefined, "session-1",
+      "PermissionRequest", expect.objectContaining({ sound_enabled: true }), undefined, undefined,
     );
     disposeIsland();
     disposeSettings();
@@ -161,7 +154,7 @@ describe("island sound", () => {
     const disposeIsland = await island;
     const disposeRemount = await useIslandStore.getState().init(true);
 
-    expect(play).toHaveBeenCalledExactlyOnceWith("AppLaunch", expect.objectContaining({ sound_enabled: true }));
+    expect(play).toHaveBeenCalledExactlyOnceWith("AppLaunch", expect.objectContaining({ sound_enabled: true }), undefined, undefined);
     disposeSettings();
     disposeIsland();
     disposeRemount();

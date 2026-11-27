@@ -1,27 +1,32 @@
 //! Read-only recovery from the local provider stores.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+#[cfg(windows)]
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use std::time::Duration;
 
 use chrono::{DateTime, TimeDelta, Utc};
 use codeisland_domain::{
     AgentKind, SessionStatus, codex_desktop_session_id, discovery::DiscoveredSession,
 };
-use rusqlite::{Connection, OpenFlags};
+use serde::Deserialize;
+use serde_json::json;
 
 use crate::tailer::{CodexOrigin, RecoveredTurn, codex_origin, read_recovery_summary};
 
 const STATE_DB: &str = "state_5.sqlite";
 const ACTIVE_LIMIT: TimeDelta = TimeDelta::minutes(5);
-const SETTLED_LIMIT: TimeDelta = TimeDelta::seconds(30);
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CodexRow {
     id: String,
     path: String,
     cwd: Option<String>,
-    modified: DateTime<Utc>,
-    created: Option<DateTime<Utc>>,
+    modified: f64,
+    created: Option<f64>,
     source: String,
     originator: Option<String>,
     model: Option<String>,
@@ -45,85 +50,11 @@ fn sqlite_time(seconds: f64) -> Option<DateTime<Utc>> {
     }
 }
 
-fn table_columns(db: &Connection, query: &str) -> rusqlite::Result<HashSet<String>> {
-    let mut statement = db.prepare(query)?;
-    statement.query_map([], |row| row.get(1))?.collect()
-}
-
-fn timestamp_expr(columns: &HashSet<String>, ms: &str, seconds: &str) -> &'static str {
-    match (ms, columns.contains(ms), columns.contains(seconds)) {
-        ("updated_at_ms", true, true) => "COALESCE(NULLIF(thread.updated_at_ms, 0) / 1000.0, thread.updated_at)",
-        ("updated_at_ms", true, false) => "thread.updated_at_ms / 1000.0",
-        ("updated_at_ms", false, true) => "thread.updated_at",
-        ("created_at_ms", true, true) => "COALESCE(NULLIF(thread.created_at_ms, 0) / 1000.0, thread.created_at)",
-        ("created_at_ms", true, false) => "thread.created_at_ms / 1000.0",
-        ("created_at_ms", false, true) => "thread.created_at",
-        _ => "NULL",
-    }
-}
-
-fn codex_rows(db: &Connection, now: DateTime<Utc>) -> rusqlite::Result<Vec<CodexRow>> {
-    let columns = table_columns(db, "PRAGMA table_info(threads)")?;
-    if ["id", "rollout_path", "cwd", "archived", "source"]
-        .into_iter().any(|name| !columns.contains(name))
-    {
-        return Ok(Vec::new());
-    }
-    let updated = timestamp_expr(&columns, "updated_at_ms", "updated_at");
-    let created = timestamp_expr(&columns, "created_at_ms", "created_at");
-    let optional = |column: &str| {
-        if columns.contains(column) { format!("thread.{column}") } else { "NULL".to_owned() }
-    };
-    let edges = table_columns(db, "PRAGMA table_info(thread_spawn_edges)")?;
-    let join_edges = edges.contains("child_thread_id") && edges.contains("parent_thread_id");
-    let join = if join_edges { "LEFT JOIN thread_spawn_edges edge ON edge.child_thread_id = thread.id" } else { "" };
-    let parent = if join_edges { "edge.parent_thread_id" } else { "NULL" };
-    let status = if join_edges && edges.contains("status") { "edge.status" } else { "NULL" };
-    let statement = format!(
-        "SELECT thread.id, thread.rollout_path, thread.cwd, CAST({updated} AS REAL),
-                CAST({created} AS REAL), thread.source, {}, {}, {},
-                COALESCE(NULLIF({}, ''), {}), COALESCE(NULLIF({}, ''), {}), {},
-                {parent}, {status}
-         FROM threads AS thread {join}
-         WHERE thread.archived = 0 AND {updated} >= ?1
-           AND (LOWER(thread.source) IN ('vscode', 'appserver', 'app_server')
-                OR thread.source LIKE '{{\"subagent%')
-         ORDER BY {updated} DESC LIMIT 50",
-        optional("originator"), optional("model"), optional("reasoning_effort"),
-        optional("name"), optional("title"), optional("preview"), optional("first_user_message"),
-        optional("git_branch"),
-    );
-    let mut statement = db.prepare(&statement)?;
-    let cutoff = (now - TimeDelta::hours(1)).timestamp_millis() as f64 / 1000.0;
-    let rows = statement.query_map([cutoff], |row| {
-        let modified = row.get::<_, f64>(3)?;
-        Ok(sqlite_time(modified).map(|modified| {
-            Ok::<CodexRow, rusqlite::Error>(CodexRow {
-                id: row.get(0)?,
-                path: row.get(1)?,
-                cwd: non_empty(row.get(2)?),
-                modified,
-                created: row.get::<_, Option<f64>>(4)?.and_then(sqlite_time),
-                source: row.get(5)?,
-                originator: non_empty(row.get(6)?),
-                model: non_empty(row.get(7)?),
-                reasoning: non_empty(row.get(8)?),
-                title: non_empty(row.get(9)?),
-                prompt: non_empty(row.get(10)?),
-                branch: non_empty(row.get(11)?),
-                parent: non_empty(row.get(12)?),
-                edge_status: non_empty(row.get(13)?),
-            })
-        }).transpose()?)
-    })?;
-    Ok(rows.filter_map(Result::ok).flatten().collect())
-}
-
-pub(crate) fn read_codex_desktop(path: &Path, now: DateTime<Utc>) -> rusqlite::Result<Vec<DiscoveredSession>> {
-    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
-    db.busy_timeout(Duration::from_millis(100))?;
-    let rows = codex_rows(&db, now)?;
-    drop(db);
+pub(crate) fn read_codex_desktop(path: &Path, now: DateTime<Utc>) -> std::io::Result<Vec<DiscoveredSession>> {
+    let rows: Option<Vec<CodexRow>> = codeisland_swift::call(c"codex.storeRows", json!({
+        "path": path, "now": now.timestamp_millis() as f64 / 1_000.0,
+    }));
+    let rows = rows.ok_or_else(|| std::io::Error::other("could not open the Codex state database"))?;
     Ok(rows.into_iter().filter_map(|row| recover_codex(row, path, now)).collect())
 }
 
@@ -137,7 +68,7 @@ fn recover_codex(row: CodexRow, state_path: &Path, now: DateTime<Utc>) -> Option
     }
     let stat = rollout.metadata().ok()?;
     if !stat.is_file() { return None; }
-    let modified = row.modified.max(DateTime::from(stat.modified().ok()?));
+    let modified = sqlite_time(row.modified)?.max(DateTime::from(stat.modified().ok()?));
     if now - modified > TimeDelta::minutes(10) { return None; }
 
     let summary = read_recovery_summary(&rollout, AgentKind::Codex, &row.id)?;
@@ -156,18 +87,19 @@ fn recover_codex(row: CodexRow, state_path: &Path, now: DateTime<Utc>) -> Option
     let finished_by_edge = row.edge_status.as_deref().is_some_and(|status| {
         matches!(status, "completed" | "done" | "failed" | "errored" | "closed" | "shutdown")
     });
-    let running = now - modified <= ACTIVE_LIMIT && summary.turn == Some(RecoveredTurn::Running) && !finished_by_edge;
-    if !running && now - modified > SETTLED_LIMIT {
-        return None;
-    }
-
+    let status: Option<SessionStatus> = codeisland_swift::call(c"codex.visibleStatus", json!({
+        "now": now.timestamp_millis() as f64 / 1_000.0,
+        "modified": modified.timestamp_millis() as f64 / 1_000.0,
+        "running": summary.turn == Some(RecoveredTurn::Running) && !finished_by_edge,
+    }));
+    let status = status?;
     let cwd = row.cwd.or(summary.cwd).filter(|cwd| !subagent_worktree(cwd));
     Some(DiscoveredSession {
         session_id: codex_desktop_session_id(&row.id),
         provider_session_id: row.id,
         claude_desktop_session_id: None,
         agent: AgentKind::Codex,
-        finished_subagent: parent.is_some() && !running,
+        finished_subagent: parent.is_some() && status == SessionStatus::Idle,
         parent_session_id: parent.as_deref().map(codex_desktop_session_id),
         title: row.title.or(summary.codex_worker_title),
         cwd,
@@ -178,9 +110,9 @@ fn recover_codex(row: CodexRow, state_path: &Path, now: DateTime<Utc>) -> Option
         last_message: summary.last_message,
         transcript_path: rollout.to_string_lossy().into_owned(),
         pid: None,
-        started_at: row.created,
+        started_at: row.created.and_then(sqlite_time),
         modified_at: modified,
-        status: if running { SessionStatus::Running } else { SessionStatus::Idle },
+        status,
     })
 }
 
@@ -256,12 +188,8 @@ fn read_claude_record(
     pid: u32,
     inspect: &impl Fn(u32) -> Option<DateTime<Utc>>,
 ) -> Option<ClaudeRecord> {
-    use std::io::Read;
-
-    let mut bytes = Vec::new();
-    std::fs::File::open(path).ok()?.take(64 * 1024 + 1).read_to_end(&mut bytes).ok()?;
-    if bytes.len() > 64 * 1024 { return None; }
-    let record: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let record: Option<serde_json::Value> = codeisland_swift::call(c"claude.readRecord", path);
+    let record = record?;
     if record["pid"].as_u64()? != u64::from(pid) {
         return None;
     }
@@ -270,26 +198,23 @@ fn read_claude_record(
     if matches!(domain.as_str(), "linux" | "wsl") {
         return None;
     }
-    let id = record["sessionId"].as_str()?;
-    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')) {
-        return None;
-    }
     let cwd = record["cwd"].as_str()?.trim();
     if cwd.is_empty() || subagent_worktree(cwd) {
         return None;
     }
     let native_windows = domain == "win32";
     let raw_start = record["procStart"].as_str()?;
-    let recorded_start = if native_windows {
-        crate::process::windows_filetime(raw_start.parse().ok()?)?
+    let platform_time = if native_windows {
+        Some(crate::process::windows_filetime(raw_start.parse().ok()?)?.timestamp_millis())
     } else {
-        parse_claude_start(raw_start)?
+        DateTime::parse_from_rfc3339(raw_start).ok().map(|date| date.timestamp_millis())
     };
     let started = inspect(pid)?;
-    let start_tolerance_ms = if native_windows { 0 } else { 1_000 };
-    if (recorded_start - started).num_milliseconds().abs() > start_tolerance_ms {
-        return None;
-    }
+    let id: Option<String> = codeisland_swift::call(c"claude.recordID", json!({
+        "record": record, "pid": pid, "started": started.timestamp_millis(),
+        "platformTime": platform_time, "exact": native_windows,
+    }));
+    let id = id.filter(|id| id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')))?;
     let desktop_session_id = record["hostSessionId"].as_str()
         .filter(|id| codeisland_domain::claude_desktop_code::valid_id(id)).map(ToOwned::to_owned);
     let status = record["statusUpdatedAt"].as_i64()
@@ -301,7 +226,7 @@ fn read_claude_record(
             _ => None,
         });
     Some(ClaudeRecord {
-        id: id.to_owned(),
+        id,
         cwd: cwd.to_owned(),
         title: non_empty(record["name"].as_str().map(ToOwned::to_owned)),
         desktop_session_id,
@@ -309,14 +234,6 @@ fn read_claude_record(
         pid,
         started,
     })
-}
-
-fn parse_claude_start(raw: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(raw).map(|value| value.with_timezone(&Utc)).ok()
-        .or_else(|| {
-            let normalized = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-            chrono::NaiveDateTime::parse_from_str(&normalized, "%a %b %e %T %Y").ok().map(|value| value.and_utc())
-        })
 }
 
 pub(crate) fn read_claude_sessions(
@@ -410,8 +327,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use codeisland_domain::{AgentEvent, AgentEventType, AppSettings};
-    use rusqlite::params;
-    use serde_json::json;
+    use rusqlite::{Connection, params};
 
     struct Fixture(PathBuf);
 

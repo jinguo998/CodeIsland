@@ -23,7 +23,7 @@ use tokio::sync::{Mutex as AsyncMutex, Notify, broadcast, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::follow_up::{FollowUps, reminder_request, still_pending};
-use crate::push_format::{push_content, push_title, push_words};
+use crate::push_format::{FormattedPush, Notice, format_push};
 use crate::island::{CardShortcut, CardShortcutOutcome, IslandSurface, visible_requests};
 use crate::persistence;
 use crate::{ipc_handler, process, tailer};
@@ -50,6 +50,8 @@ pub struct UiState {
     pub follow_up_hint_pulse: u32,
     #[serde(default)]
     pub display_asleep: bool,
+    #[serde(default)]
+    pub quiet_hours_active: bool,
     pub idle_session_removal_groups: Vec<Vec<String>>,
 }
 
@@ -86,6 +88,7 @@ pub struct Runtime {
     shortcut_recording: AtomicBool,
     terminal_visibility: RwLock<Option<Arc<TerminalVisibilityDetector>>>,
     terminal_tab_visibility: RwLock<Option<Arc<TerminalVisibilityDetector>>>,
+    sound: codeisland_swift::Context,
     push: AsyncMutex<PushDelivery>,
     held_pushes: Mutex<HashMap<String, (AgentEvent, PushKind)>>,
     away: AtomicBool,
@@ -103,17 +106,14 @@ pub struct Runtime {
 struct PushDelivery {
     gate: PushGate,
     last_completion: HashMap<String, DateTime<Utc>>,
-    global: VecDeque<Instant>,
-    channel_sends: HashMap<PushChannel, VecDeque<Instant>>,
 }
 
 struct PushMessage {
     id: String,
     session_id: String,
     kind: PushKind,
-    title: String,
-    headline: String,
-    body: String,
+    text: FormattedPush,
+    display_only: bool,
 }
 
 struct IslandPresentation {
@@ -239,6 +239,7 @@ impl Runtime {
             shortcut_recording: AtomicBool::new(false),
             terminal_visibility: RwLock::new(None),
             terminal_tab_visibility: RwLock::new(None),
+            sound: codeisland_swift::Context::default(),
             push: AsyncMutex::new(PushDelivery::default()),
             held_pushes: Mutex::new(HashMap::new()),
             away: AtomicBool::new(false),
@@ -273,6 +274,7 @@ impl Runtime {
             follow_up_hint_active: island.follow_ups.hint_active(),
             follow_up_hint_pulse: island.follow_ups.hint_pulse,
             display_asleep: self.is_display_asleep(),
+            quiet_hours_active: island.settings.is_quiet_now(),
             idle_session_removal_groups: store.idle_session_removal_groups(),
         }
     }
@@ -420,9 +422,10 @@ impl Runtime {
     }
 
     fn is_away_for_push(&self, settings: &AppSettings) -> bool {
-        self.is_away()
-            || self.is_display_asleep()
-            || self.idle_seconds.load(Ordering::Relaxed) >= u64::from(settings.push_away_idle_minutes) * 60
+        codeisland_swift::call(c"push.presence", serde_json::json!({
+            "away": self.is_away(), "asleep": self.is_display_asleep(), "idle": self.idle_seconds.load(Ordering::Relaxed),
+            "threshold": u64::from(settings.push_away_idle_minutes) * 60,
+        }))
     }
 
     /// The desktop supplies its platform-specific terminal visibility check.
@@ -898,7 +901,7 @@ impl Runtime {
             self.send_push(&event, push.kind, push.smart_suppressed, &settings);
         }
         if decision != AttentionDecision::default() {
-            let _ = self.updates.send(RuntimeUpdate::Attention { session_id, decision });
+            self.broadcast_attention(session_id, decision, Utc::now());
         }
         self.schedule_persist();
     }
@@ -1067,25 +1070,15 @@ impl Runtime {
             push_enabled: settings.push_enabled,
             session_in_front: in_front,
         };
-        let mut decision = attention::decide(&event, &outcome, subject, &context);
-        // A burst of approvals is one interruption, not one chime per card.
-        if matches!(
-            event.event_type,
-            AgentEventType::PermissionRequest | AgentEventType::Question
-        ) {
-            let kind = if event.event_type == AgentEventType::Question {
-                RequestKind::Question
-            } else {
-                RequestKind::Permission
-            };
-            let store = lock(&self.store);
-            if visible_requests(&store, kind)
-                .next()
-                .is_none_or(|head| head.event_id != event.id)
-            {
-                decision.sound = None;
+        let first = match event.event_type {
+            AgentEventType::PermissionRequest | AgentEventType::Question => {
+                let kind = if event.event_type == AgentEventType::Question { RequestKind::Question } else { RequestKind::Permission };
+                let store = lock(&self.store);
+                visible_requests(&store, kind).next().is_some_and(|head| head.event_id == event.id)
             }
-        }
+            _ => true,
+        };
+        let decision = attention::decide_for_burst(&event, &outcome, subject, &context, first);
 
         if outcome.applied {
             self.apply_island_attention(&event, &outcome, &decision);
@@ -1096,13 +1089,21 @@ impl Runtime {
             if let Some(push) = decision.push.clone() {
                 self.send_push(&event, push.kind, push.smart_suppressed, &settings);
             }
-            let _ = self.updates.send(RuntimeUpdate::Attention {
-                session_id: event.session_id.clone(),
-                decision,
-            });
+            self.broadcast_attention(event.session_id.clone(), decision, Utc::now());
         }
         self.schedule_persist();
         outcome
+    }
+
+    fn broadcast_attention(&self, session_id: String, mut decision: AttentionDecision, now: DateTime<Utc>) {
+        if decision.sound.as_deref() == Some(attention::CUE_TURN_FAILED)
+            && !self.sound.call::<bool>(c"sound.failure", serde_json::json!({ "id": session_id, "millis": now.timestamp_millis() }))
+        {
+            decision.sound = None;
+        }
+        if decision != AttentionDecision::default() {
+            let _ = self.updates.send(RuntimeUpdate::Attention { session_id, decision });
+        }
     }
 
     /// The frontend tells the runtime whether the active session's terminal is
@@ -1131,15 +1132,16 @@ impl Runtime {
             let store = lock(&self.store);
             let session = store.get(&event.session_id);
             let request = store.get_pending(&event.id);
-            let words = push_words(&settings.language);
-            let (headline, body) = push_content(kind, request, session, Some(event), words, settings.push_summary_length);
+            let display_only = kind == PushKind::DisplayOnlyWait || (
+                !event.waits && matches!(kind, PushKind::Approval | PushKind::Question)
+                && session.is_some_and(|card| card.status.needs_you())
+                && !store.pending().values().any(|held| held.session_id == event.session_id)
+            );
+            let notice = if display_only { Notice::DisplayOnly(event) } else { Notice::Event(event) };
             PushMessage {
-                id: event.id.clone(),
-                session_id: event.session_id.clone(),
-                kind,
-                title: push_title(kind, event.agent, session.and_then(|session| session.project.as_deref()), false),
-                headline,
-                body,
+                id: event.id.clone(), session_id: event.session_id.clone(), kind,
+                text: format_push(kind, request, session, notice, settings, Utc::now()),
+                display_only,
             }
         };
         let weak = self.self_ref.clone();
@@ -1172,7 +1174,7 @@ impl Runtime {
         message: &PushMessage,
         reminder: Option<&Reminder>,
     ) -> bool {
-        let must_deliver = reminder.is_none() && matches!(message.kind, PushKind::Approval | PushKind::Question);
+        let must_deliver = reminder.is_none() && !message.display_only && matches!(message.kind, PushKind::Approval | PushKind::Question);
         {
             let mut push = self.push.lock().await;
             if let Some(reminder) = reminder {
@@ -1191,32 +1193,19 @@ impl Runtime {
             if !notifiers.iter().any(|notifier| notifier.accepts(message.kind, reminder.is_some())) {
                 return false;
             }
-            let now = Instant::now();
-            push.global.retain(|sent| now.saturating_duration_since(*sent) < Duration::from_secs(60));
-            if !must_deliver && push.global.len() >= 12 {
+            if !push.gate.should_send_event(&message.id, &message.session_id, message.kind, reminder.is_some()) {
                 return false;
-            }
-            let request = match message.kind {
-                PushKind::Approval | PushKind::Question | PushKind::DisplayOnlyWait => &message.id,
-                _ => &message.session_id,
-            };
-            if !push.gate.should_send(&message.id, &format!("{:?}|{request}", message.kind)) {
-                return false;
-            }
-            if !must_deliver {
-                push.global.push_back(now);
             }
         }
         let mut sent = false;
         let mut deliveries = tokio::task::JoinSet::new();
         for notifier in notifiers.iter().filter(|notifier| notifier.accepts(message.kind, reminder.is_some())) {
             let notifier = notifier.clone();
-            let title = message.title.clone();
-            let headline = message.headline.clone();
-            let body = message.body.clone();
+            let text = if notifier.includes_details() { &message.text.full } else { &message.text.brief }.clone();
             let kind = message.kind;
             let reminder = reminder.cloned();
             let event_id = message.id.clone();
+            let display_wait = message.display_only.then(|| message.session_id.clone());
             let runtime = self.self_ref.clone();
             deliveries.spawn(async move {
                 let Some(runtime) = runtime.upgrade() else { return false; };
@@ -1228,10 +1217,15 @@ impl Runtime {
                     if !still_pending(&store, &reminder.key, reminder.request_id.as_deref()) {
                         return false;
                     }
+                } else if let Some(session_id) = display_wait {
+                    let store = lock(&runtime.store);
+                    let expected = if kind == PushKind::Approval { SessionStatus::WaitingPermission } else { SessionStatus::WaitingAnswer };
+                    if !store.get(&session_id).is_some_and(|s| s.status == expected)
+                        || store.pending().values().any(|r| r.session_id == session_id) { return false; }
                 } else if must_deliver && lock(&runtime.store).get_pending(&event_id).is_none() {
                     return false;
                 }
-                notifier.send_for(kind, &title, &headline, &body, reminder.is_some()).await.is_ok()
+                notifier.send_for(kind, &text.title, &text.headline, &text.body, reminder.is_some()).await.is_ok()
             });
         }
         while let Some(result) = deliveries.join_next().await {
@@ -1247,33 +1241,14 @@ impl Runtime {
     }
 
     async fn acquire_push_slot(&self, channel: PushChannel, must_deliver: bool) -> bool {
-        let limits = channel.rate_limits();
-        let Some(maximum) = limits.iter().map(|(_, seconds)| *seconds).max() else {
-            return true;
-        };
-        let grace = Instant::now() + Duration::from_secs(5);
+        let queued = Instant::now();
         loop {
-            let next = {
-                let now = Instant::now();
-                let mut push = self.push.lock().await;
-                let sends = push.channel_sends.entry(channel).or_default();
-                sends.retain(|sent| now.saturating_duration_since(*sent) < Duration::from_secs(maximum));
-                let next = limits.iter().filter_map(|(count, seconds)| {
-                    let window = Duration::from_secs(*seconds);
-                    let index = sends.len().checked_sub(*count)?;
-                    let slot = sends[index] + window;
-                    (slot > now).then_some(slot)
-                }).max();
-                let Some(next) = next else {
-                    sends.push_back(now);
-                    return true;
-                };
-                next
-            };
-            if !must_deliver && next > grace {
-                return false;
+            let slot = self.push.lock().await.gate.reserve_channel(channel, must_deliver, queued);
+            match slot {
+                None => return false,
+                Some(delay) if delay.is_zero() => return true,
+                Some(delay) => tokio::time::sleep(delay).await,
             }
-            tokio::time::sleep_until(next.into()).await;
         }
     }
 
@@ -1804,10 +1779,7 @@ impl Runtime {
                 ..AttentionIntents::default()
             }, &context);
             if decision.sound.is_some() {
-                let _ = self.updates.send(RuntimeUpdate::Attention {
-                    session_id: reminder.key.session_id,
-                    decision,
-                });
+                self.broadcast_attention(reminder.key.session_id, decision, now);
             }
         }
         if !remote.is_empty() {
@@ -2055,14 +2027,6 @@ fn reminder_push(store: &SessionStore, reminder: &Reminder, now: DateTime<Utc>, 
         ReminderKind::Completion if reminder.turn_failed => return None,
         ReminderKind::Completion => PushKind::Completion,
     };
-    let words = push_words(&settings.language);
-    let (pending, details) = push_content(kind, request, Some(session), None, words, settings.push_summary_length);
-    let minutes = (now - reminder.waiting_since).num_minutes();
-    let headline = if minutes > 0 {
-        format!("{} · {} · {pending}", words.reminder, words.minutes.replace("%d", &minutes.to_string()))
-    } else {
-        format!("{} · {pending}", words.reminder)
-    };
     Some(PushMessage {
         id: format!(
             "follow-up:{:?}:{}:{}:{}",
@@ -2073,9 +2037,8 @@ fn reminder_push(store: &SessionStore, reminder: &Reminder, now: DateTime<Utc>, 
         ),
         session_id: session.session_id.clone(),
         kind,
-        title: push_title(kind, session.agent, session.project.as_deref(), true),
-        headline,
-        body: details,
+        text: format_push(kind, request, Some(session), Notice::Reminder(reminder), settings, now),
+        display_only: reminder.origin == ReminderOrigin::DisplayOnly,
     })
 }
 
@@ -2164,6 +2127,18 @@ pub(crate) mod tests {
         fn assert_send<T: Send>() {}
         assert_send_sync::<Arc<Runtime>>();
         assert_send::<RuntimeHandle>();
+    }
+
+    #[test]
+    fn failure_cues_wait_for_sixty_quiet_seconds_per_session() {
+        let runtime = runtime_with(AppSettings::default());
+        let mut updates = runtime.subscribe();
+        for (id, time, audible) in [("a", 0, true), ("a", 59, false), ("a", 60, false), ("b", 60, true), ("a", 120, true)] {
+            runtime.broadcast_attention(id.into(), AttentionDecision {
+                sound: Some(attention::CUE_TURN_FAILED.into()), ..AttentionDecision::default()
+            }, DateTime::from_timestamp(time, 0).unwrap());
+            assert_eq!(matches!(updates.try_recv(), Ok(RuntimeUpdate::Attention { .. })), audible);
+        }
     }
 
     #[test]

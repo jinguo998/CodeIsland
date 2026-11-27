@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use chrono::{DateTime, TimeDelta, Utc};
-use codeisland_domain::cowork::{self, Audit, Conversation, Event, Metadata, Phase, Update};
+use codeisland_domain::cowork::{self, Audit, AuditStream, Conversation, Metadata, Phase, Update};
 use serde_json::Value;
 
 const TAIL_BYTES: u64 = 256 * 1024;
@@ -46,6 +46,7 @@ struct Cursor {
     fragment: Vec<u8>,
     discard_fragment: bool,
     audit: Audit,
+    stream: AuditStream,
 }
 
 struct Delta {
@@ -65,6 +66,7 @@ impl Cursor {
             self.fragment.clear();
             self.discard_fragment = false;
             self.audit = Audit::default();
+            self.stream = AuditStream::default();
         }
         if stamp.size == self.offset {
             self.stamp = Some(stamp);
@@ -77,12 +79,13 @@ impl Cursor {
             self.fragment.clear();
             self.discard_fragment = true;
             self.audit = Audit::default();
+            self.stream = AuditStream::default();
         }
         let data = read_range(path, start, stamp.size - start)?;
         self.offset = start + data.len() as u64;
         self.stamp = Some(stamp);
         let mut lines = data.split_inclusive(|byte| *byte == b'\n');
-        let mut delta = Delta { live: false, prompts: false, turns: false, permissions: false };
+        let mut records = Vec::new();
         for line in &mut lines {
             if self.discard_fragment {
                 self.discard_fragment = line.last() != Some(&b'\n');
@@ -96,18 +99,11 @@ impl Cursor {
                 }
                 continue;
             }
-            let event = cowork::parse_audit_line(&self.fragment);
-            self.fragment.clear();
-            if event == Event::Ignored {
-                continue;
-            }
-            delta.live = true;
-            delta.prompts |= matches!(event, Event::Prompt(_));
-            delta.turns |= matches!(event, Event::End { .. });
-            delta.permissions |= matches!(event, Event::Request { .. });
-            self.audit.apply(event);
+            records.append(&mut self.fragment);
         }
-        Some(delta)
+        let batch = self.stream.append(&records);
+        self.audit = batch.audit;
+        Some(Delta { live: batch.live, prompts: batch.prompts, turns: batch.turns, permissions: batch.permissions })
     }
 }
 

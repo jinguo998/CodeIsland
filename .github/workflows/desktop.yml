@@ -8,10 +8,18 @@ on:
       - "v*"
     paths:
       - "desktop/**"
+      - "Sources/CodeIslandCore/**"
+      - "Sources/CodeIsland/**"
+      - "Tests/CodeIslandCoreTests/**"
+      - "Tests/CodeIslandTests/**"
       - ".github/workflows/desktop.yml"
   pull_request:
     paths:
       - "desktop/**"
+      - "Sources/CodeIslandCore/**"
+      - "Sources/CodeIsland/**"
+      - "Tests/CodeIslandCoreTests/**"
+      - "Tests/CodeIslandTests/**"
       - ".github/workflows/desktop.yml"
   workflow_dispatch:
 
@@ -45,6 +53,14 @@ jobs:
       - name: Build
         run: npm run build
 
+  macos-core:
+    name: Original macOS core tests
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the shared sources in the macOS package
+        run: python3 desktop/scripts/build-swift.py macos-test
+
   rust:
     name: Rust crates
     runs-on: ubuntu-latest
@@ -57,6 +73,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri -> target
+      - name: Check WebView volume values against the macOS Swift source
+        run: python3 ../scripts/build-swift.py sound-assets --check
+      - name: Test original Swift core
+        run: python3 ../scripts/build-swift.py test --scratch "${{ runner.temp }}/codeisland-swift-tests"
       - name: Test core crates
         run: >-
           cargo test
@@ -70,7 +90,9 @@ jobs:
 
   windows:
     name: Windows build and tests
-    runs-on: windows-latest
+    runs-on: windows-2022
+    env:
+      CODEISLAND_SWIFT_SCRATCH: ${{ github.workspace }}/.build/desktop-swift
     defaults:
       run:
         working-directory: desktop
@@ -81,6 +103,11 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: desktop/package-lock.json
+      - name: Set up Swift for Windows
+        uses: compnerd/gha-setup-swift@57fe462cd3c7b05ae8fcff79b00719312e305257
+        with:
+          swift-version: swift-6.2.3-release
+          swift-build: 6.2.3-RELEASE
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -89,6 +116,8 @@ jobs:
         run: npm ci
       - name: Build frontend
         run: npm run build
+      - name: Test original Swift core on Windows
+        run: python scripts/build-swift.py test --scratch "$env:CODEISLAND_SWIFT_SCRATCH"
       - name: Prepare hook sidecars
         shell: pwsh
         run: ./scripts/prepare-sidecar.ps1
@@ -97,13 +126,23 @@ jobs:
         run: cargo test --workspace
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2"
-      - name: Build executable (no bundle)
-        run: cargo tauri build --no-bundle
+      - name: Build Windows installer
+        run: cargo tauri build --bundles nsis
+      - name: Load the Swift core from the installer without the Swift SDK
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe -ErrorAction Stop | Select-Object -First 1
+          $dest = Join-Path $env:RUNNER_TEMP "installed-codeisland"
+          & 7z x $installer.FullName "-o$dest" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Could not extract the installer." }
+          $swift = Get-ChildItem $dest -Recurse -Filter CodeIslandDesktopCore.dll | Select-Object -First 1
+          if (-not $swift -or $swift.Directory.Name -ne "swift-core") { throw "Swift core missing from installer." }
+          python scripts/check-swift-bundle.py $swift.DirectoryName
 
   bundle:
     name: Bundle release
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: windows-latest
+    runs-on: windows-2022
     permissions:
       contents: write
     defaults:
@@ -116,6 +155,11 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: desktop/package-lock.json
+      - name: Set up Swift for Windows
+        uses: compnerd/gha-setup-swift@57fe462cd3c7b05ae8fcff79b00719312e305257
+        with:
+          swift-version: swift-6.2.3-release
+          swift-build: 6.2.3-RELEASE
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

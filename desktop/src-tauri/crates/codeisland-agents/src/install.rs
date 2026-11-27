@@ -155,40 +155,10 @@ fn install_definition(paths: &Paths, def: &AgentDefinition) -> Result<(), AgentE
 
 /// Enable the Codex feature while preserving the user's TOML layout.
 fn codex_enable_hooks(path: &Path, existing: &str) -> Result<String, AgentError> {
-    let mut document: DocumentMut = existing.parse().map_err(|error| {
-        AgentError::Config(format!("{}: {error}", path.display()))
-    })?;
-    if !document.contains_key("features") {
-        let mut features = Table::new();
-        features.set_dotted(true);
-        document.insert("features", Item::Table(features));
-    }
-    let incompatible = || AgentError::Config(format!(
-        "{}: cannot safely enable `features.hooks`; check the features table",
-        path.display(),
-    ));
-    let features = document.get_mut("features").and_then(Item::as_table_mut)
-        .ok_or_else(incompatible)?;
-    for key in ["hooks", "codex_hooks"] {
-        if features.get(key).is_some_and(|item| item.as_bool().is_none()) {
-            return Err(incompatible());
-        }
-    }
-    let legacy = features.remove("codex_hooks");
-    if features.get("hooks").and_then(Item::as_bool) != Some(true) {
-        let decoration = features.get("hooks")
-            .or(legacy.as_ref())
-            .and_then(Item::as_value)
-            .map(|value| value.decor().clone());
-        let mut enabled = toml_edit::Value::from(true);
-        if let Some(decoration) = decoration {
-            *enabled.decor_mut() = decoration;
-        }
-        features.insert("hooks", Item::Value(enabled));
-    } else if legacy.is_none() {
-        return Ok(existing.to_owned());
-    }
-    Ok(document.to_string())
+    // Reject a malformed user document before the source-preserving edit.
+    existing.parse::<DocumentMut>().map_err(|error| AgentError::Config(format!("{}: {error}", path.display())))?;
+    codeisland_swift::call::<Option<String>>(c"codex.enableHooks", existing)
+        .ok_or_else(|| AgentError::Config(format!("{}: unsupported Codex hooks feature layout", path.display())))
 }
 
 pub fn uninstall_with(paths: &Paths, agent: AgentKind) -> Result<ToolStatus, AgentError> {

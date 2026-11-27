@@ -1,15 +1,16 @@
 # CodeIsland Desktop
 
-A clean-room Tauri 2 + React rewrite of the macOS CodeIsland AI-agent status
-island for Windows. The Rust workspace lives in `src-tauri/`; the React UI is
-built with Vite.
+The Tauri 2 app and its hook load a Swift library built from the original macOS sources in `Sources/CodeIslandCore` and `Sources/CodeIsland`. Sessions, checklists, reminders, approvals, usage, and notification content run through the same implementations as on macOS. The Windows installer includes the Swift runtime.
+
+The desktop build copies portable files verbatim into its SwiftPM build directory. For sources that mix native logic with AppKit, Darwin sockets or file watchers, `scripts/swift_sources.py` selects the original declarations and records their source locations. Windows paths, named pipes, process and window handles, WinRT Bluetooth, and the Rust-to-Swift interface live under `desktop/`.
 
 ## Prerequisites
 
 - Windows 10/11 (WebView2 is installed by the Tauri installer/bundler)
 - Node.js 20+ and npm
+- Swift 6.2.3 or later and Python 3 for native builds (`winget install --id Swift.Toolchain -e`)
 - Rust stable (`rustup default stable`) with the MSVC toolchain
-- Visual Studio Build Tools with the "Desktop development with C++" workload
+- Visual Studio 2022 Build Tools with the v143 C++ toolset and the Windows SDK
 - WebView2 runtime (present on current Windows; the Tauri docs have the
   evergreen bootstrapper)
 
@@ -42,7 +43,7 @@ For a complete release (bundles + SHA-256 manifest):
 .\scripts\build-release.ps1
 ```
 
-Re-run `sync-to-windows.sh` after editing Rust files or Tauri config. The
+Re-run `sync-to-windows.sh` after changing Swift or Rust sources or Tauri configuration. The
 script excludes `node_modules`, `dist` and `target`.
 
 ### Frontend-only development (WSL or Windows)
@@ -65,11 +66,11 @@ The script runs `npm ci`, the frontend build and the Tauri build, copies the
 NSIS/MSI bundles into `desktop/artifacts/`, computes SHA256 hashes and writes
 `artifacts/release-manifest.json`.
 
-CI (`.github/workflows/desktop.yml`) runs frontend checks on Ubuntu, core Rust
-tests on Ubuntu, a full workspace test plus `tauri build --no-bundle` on
-Windows, and NSIS/MSI bundles on `v*` tags.
+CI runs the original Swift tests on macOS, Linux and Windows, and exercises the Rust callers on Linux and Windows. It extracts the Windows NSIS installer and loads the packaged Swift library with only its bundled dependencies and system DLLs available. Release tags also build an MSI. The WebView reads its 101 volume slider values from the original Swift sound curve. After changing the curve, run `python3 desktop/scripts/build-swift.py sound-assets` from the repository root.
 
 ## Tests
+
+Linux native tests require Swift and the SQLite development headers (`libsqlite3-dev` on Ubuntu).
 
 ```bash
 # Frontend typecheck + bundle

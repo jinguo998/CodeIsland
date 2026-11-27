@@ -27,136 +27,21 @@ pub fn command_for_event(event: &AgentEvent) -> Option<&str> {
         .or_else(|| payload.pointer("/toolInput/command"))?.as_str()
 }
 
-/// Only save a rule when all commands can be described by up to four literal
-/// prefixes. Each prefix is the first three words of a plain command.
-pub fn prefix_patterns(script: &str) -> Option<Vec<Vec<String>>> {
-    let mut patterns = Vec::new();
-    for mut command in plain_commands(script)? {
-        command.truncate(3);
-        if !patterns.contains(&command) {
-            patterns.push(command);
-        }
-    }
-    (patterns.len() <= 4).then_some(patterns)
-}
-
-pub fn commands_match(script: &str, patterns: &[Vec<String>]) -> bool {
-    !patterns.is_empty() && plain_commands(script).is_some_and(|commands| {
-        commands.iter().all(|command| {
-            patterns.iter().any(|prefix| !prefix.is_empty() && command.starts_with(prefix))
-        })
+fn command_hook(script: &str) -> serde_json::Value {
+    serde_json::json!({
+        "event": "PermissionRequest", "source": "codex", "tool": "Bash",
+        "payload": {"tool_input": {"command": script}},
     })
 }
 
-#[derive(Default)]
-struct PlainScript {
-    commands: Vec<Vec<String>>,
-    words: Vec<String>,
-    word: String,
-    word_parts: usize,
-    unquoted_run: bool,
-    name_is_quoted: bool,
-    awaiting_command: bool,
-    empty_concatenation: bool,
+pub fn prefix_patterns(script: &str) -> Option<Vec<Vec<String>>> {
+    codeisland_swift::call(c"codex.prefixes", command_hook(script))
 }
 
-impl PlainScript {
-    fn end_word(&mut self) {
-        if self.word_parts == 0 {
-            return;
-        }
-        self.empty_concatenation |= self.word_parts > 1 && self.word.is_empty();
-        self.words.push(std::mem::take(&mut self.word));
-        self.word_parts = 0;
-        self.unquoted_run = false;
-    }
-
-    fn end_command(&mut self) -> Option<()> {
-        self.end_word();
-        let name = self.words.first()?;
-        if self.name_is_quoted || name.is_empty() || name.contains('=') || matches!(
-            name.as_str(),
-            "if" | "then" | "else" | "elif" | "fi" | "case" | "esac" | "for" | "select"
-                | "while" | "until" | "do" | "done" | "in" | "function" | "time" | "coproc"
-        ) {
-            return None;
-        }
-        self.commands.push(std::mem::take(&mut self.words));
-        self.name_is_quoted = false;
-        Some(())
-    }
-}
-
-fn plain_commands(script: &str) -> Option<Vec<Vec<String>>> {
-    let mut input = script.chars().peekable();
-    let mut parsed = PlainScript::default();
-    while let Some(ch) = input.next() {
-        match ch {
-            ' ' | '\t' => parsed.end_word(),
-            '\n' => {
-                if !parsed.awaiting_command && (parsed.word_parts > 0 || !parsed.words.is_empty()) {
-                    parsed.end_command()?;
-                }
-            }
-            ';' => {
-                if parsed.awaiting_command || input.peek() == Some(&';') {
-                    return None;
-                }
-                parsed.end_command()?;
-            }
-            '&' | '|' => {
-                if parsed.awaiting_command || (ch == '|' && input.peek() == Some(&'&'))
-                    || (ch == '&' && input.peek() != Some(&'&'))
-                {
-                    return None;
-                }
-                if input.peek() == Some(&ch) {
-                    input.next();
-                }
-                parsed.end_command()?;
-                parsed.awaiting_command = true;
-            }
-            '\'' | '"' => {
-                parsed.name_is_quoted |= parsed.words.is_empty();
-                parsed.word_parts += 1;
-                parsed.unquoted_run = false;
-                parsed.awaiting_command = false;
-                loop {
-                    let inner = input.next()?;
-                    if inner == ch {
-                        break;
-                    }
-                    if ch == '"' && (matches!(inner, '$' | '`') || (inner == '\\' && input.peek()
-                        .is_some_and(|next| matches!(*next, '$' | '`' | '"' | '\\' | '\n'))))
-                    {
-                        return None;
-                    }
-                    parsed.word.push(inner);
-                }
-            }
-            _ => {
-                if ch.is_ascii_control() || "{}*?[]\\~^#$`()<>!".contains(ch) {
-                    return None;
-                }
-                if !parsed.unquoted_run {
-                    if ch == '=' {
-                        return None;
-                    }
-                    parsed.word_parts += 1;
-                }
-                parsed.word.push(ch);
-                parsed.unquoted_run = true;
-                parsed.awaiting_command = false;
-            }
-        }
-    }
-    if parsed.awaiting_command {
-        return None;
-    }
-    if parsed.word_parts > 0 || !parsed.words.is_empty() {
-        parsed.end_command()?;
-    }
-    (!parsed.commands.is_empty() && !parsed.empty_concatenation).then_some(parsed.commands)
+pub fn commands_match(script: &str, patterns: &[Vec<String>]) -> bool {
+    let mut args = command_hook(script);
+    args["patterns"] = serde_json::json!(patterns);
+    codeisland_swift::call(c"codex.matches", args)
 }
 
 #[cfg(test)]

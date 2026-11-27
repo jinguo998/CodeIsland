@@ -301,3 +301,45 @@ fn codex_desktop_namespace_keeps_cli_with_the_same_thread_id_separate() {
     assert_eq!(desktop.session_id, "codexapp:thread");
     assert_eq!(desktop.terminal_kind.as_deref(), Some("codex"));
 }
+
+#[test]
+fn hermes_emits_one_completion_for_a_settled_reply_and_stop() {
+    let mut store = SessionStore::default();
+    let payload = r#"{"session_id":"hermes-turn", "last_assistant_message":"done"}"#;
+    let reply = normalize("hermes", "post_llm_call", payload, None).unwrap();
+    assert_eq!(reply.event_type, AgentEventType::Message);
+    assert!(!store.apply(&reply).ended_turn);
+    let stop = normalize("hermes", "on_session_end", payload, None).unwrap();
+    assert_eq!(stop.event_type, AgentEventType::TurnEnd);
+    assert!(store.apply(&stop).ended_turn);
+}
+
+#[test]
+fn hermes_gateway_and_scheduled_turns_use_the_native_session_and_attention_rules() {
+    use codeisland_domain::{AttentionContext, AttentionDecision, AttentionSubject, decide};
+    let mut store = SessionStore::default();
+    let context = AttentionContext {
+        audible_cues: ["Stop".to_owned()].into(),
+        push_enabled: true,
+        ..Default::default()
+    };
+    let reply = json!({"session_id":"gateway", "extra":{"platform":"telegram",
+        "user_message":"status?", "assistant_response":"finished"}});
+    let event = normalize("hermes", "post_llm_call", &reply.to_string(), None).unwrap();
+    assert!(!store.apply(&event).ended_turn);
+    let card = store.get("gateway").unwrap();
+    assert_eq!(card.last_prompt.as_deref(), Some("status?"));
+    assert_eq!(card.last_message.as_deref(), Some("finished"));
+    let stop = normalize("hermes", "on_session_end", &reply.to_string(), None).unwrap();
+    let outcome = store.apply(&stop);
+    assert!(outcome.ended_turn);
+    assert_eq!(decide(&stop, &outcome, AttentionSubject::default(), &context), AttentionDecision::default());
+
+    let job = json!({"session_id":"job", "extra":{"platform":"cron"}});
+    let start = normalize("hermes", "on_session_start", &job.to_string(), None).unwrap();
+    store.apply(&start);
+    assert!(store.get("job").is_some());
+    let end = normalize("hermes", "on_session_end", &job.to_string(), None).unwrap();
+    assert!(!store.apply(&end).ended_turn);
+    assert!(store.get("job").is_none());
+}

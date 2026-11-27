@@ -29,6 +29,16 @@ rsync -a --human-readable --itemize-changes \
   --exclude '*.log' \
   "$SOURCE_DIR/" "$DESTINATION/"
 
+# The desktop Swift package builds and tests the macOS sources from this mirror.
+for shared_dir in Sources/CodeIslandCore Tests/CodeIslandCoreTests; do
+  mkdir -p "$DESTINATION/../$shared_dir"
+  rsync -a "$SOURCE_DIR/../$shared_dir/" "$DESTINATION/../$shared_dir/"
+done
+
+mkdir -p "$DESTINATION/../Sources/CodeIsland"
+rsync -a --include='*/' --include='*.swift' --exclude='*' \
+  "$SOURCE_DIR/../Sources/CodeIsland/" "$DESTINATION/../Sources/CodeIsland/"
+
 # The desktop and macOS builds embed the same remote hook and OpenCode plugin.
 REMOTE_HOOK_DIR="Sources/CodeIsland/Resources"
 mkdir -p "$DESTINATION/../$REMOTE_HOOK_DIR"

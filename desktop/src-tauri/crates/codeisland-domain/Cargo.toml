@@ -5,6 +5,7 @@ edition = "2024"
 description = "Cross-platform CodeIsland domain model and session reducer"
 
 [dependencies]
+codeisland-swift = { path = "../codeisland-swift" }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

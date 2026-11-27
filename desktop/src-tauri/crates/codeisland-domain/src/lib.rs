@@ -5,6 +5,7 @@ pub mod cowork;
 pub mod discovery;
 pub mod follow_up;
 mod hook_tool;
+mod swift_session;
 pub mod ordering;
 pub mod push_text;
 pub mod session_metadata;

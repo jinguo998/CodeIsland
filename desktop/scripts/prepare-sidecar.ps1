@@ -32,12 +32,14 @@ if ([string]::IsNullOrWhiteSpace($triple)) {
 Push-Location $SrcTauri
 try {
     Write-Host "==> cargo build hook + cli ($Profile, $triple)" -ForegroundColor Cyan
-    if ($ReleaseFlag) {
-        & cargo build -p codeisland-hook -p codeisland-cli --release
-    } else {
-        & cargo build -p codeisland-hook -p codeisland-cli
-    }
+    $buildArgs = @('build', '-p', 'codeisland-hook', '-p', 'codeisland-cli', '--message-format=json-render-diagnostics')
+    if ($ReleaseFlag) { $buildArgs += $ReleaseFlag }
+    $records = & cargo @buildArgs
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed ($LASTEXITCODE)" }
+    $swiftBuild = $records | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object {
+        $_.reason -eq 'build-script-executed' -and $_.package_id -match 'codeisland-swift'
+    } | Select-Object -First 1
+    if (-not $swiftBuild) { throw "Cargo did not report the Swift core build directory." }
 
     $binaries = Join-Path $SrcTauri "binaries"
     New-Item -ItemType Directory -Path $binaries -Force | Out-Null
@@ -50,6 +52,13 @@ try {
         }
         Copy-Item $source (Join-Path $binaries "$name-$triple.exe") -Force
     }
+    $swiftRuntime = Join-Path $swiftBuild.out_dir "swift-core"
+    $localRuntime = Join-Path $outputDir "swift-core"
+    New-Item -ItemType Directory -Path $localRuntime -Force | Out-Null
+    Get-ChildItem -LiteralPath $swiftRuntime -File | Copy-Item -Destination $localRuntime -Force
+    $bundledRuntime = Join-Path $binaries "swift-core"
+    New-Item -ItemType Directory -Path $bundledRuntime -Force | Out-Null
+    Get-ChildItem -LiteralPath $swiftRuntime -File | Copy-Item -Destination $bundledRuntime -Force
     Write-Host "    staged sidecars in $binaries" -ForegroundColor Green
 }
 finally {

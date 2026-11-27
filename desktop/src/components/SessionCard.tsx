@@ -47,31 +47,6 @@ function sessionAge(startedAt: string, now: number): string {
   return `${Math.floor(minutes / 1440)}d`;
 }
 
-function modelLabel(rawModel: string | null | undefined, effort: string | null | undefined) {
-  const model = rawModel?.trim();
-  if (!model || model.startsWith("<")) return null;
-  const context = model.match(/\[([^\]]*)\]$/);
-  const base = (context ? model.slice(0, context.index).trimEnd() : model)
-    .replace(/^.*\/(?!$)/, "")
-    .replace(/^.*anthropic\./, "")
-    .replace(/@.*$/, "")
-    .replace(/-v\d[\d:]*:[\d:]*$/, "")
-    .replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, "");
-  if (!base) return null;
-  const claude = base.toLowerCase();
-  const parts = claude.split("-");
-  const family = parts.find((part) => /^[a-z]+$/.test(part) && part !== "claude");
-  const versions = parts.filter((part) => /^\d{1,2}$|^\d[\d.]*\.[\d.]*$/.test(part));
-  const knownAlias = ["opus", "sonnet", "haiku", "fable"].includes(claude);
-  const knownVersion = parts[0] === "claude" && versions.length <= 2 && versions.length + 2 === parts.length;
-  const name = family && (knownAlias || knownVersion)
-    ? [family[0].toUpperCase() + family.slice(1), versions.join(".")].filter(Boolean).join(" ")
-    : base;
-  const variant = context?.[1].trim().toUpperCase();
-  const reasoning = effort?.trim().toLowerCase();
-  return [variant ? `${name} ${variant}` : name, reasoning].filter(Boolean).join(" · ");
-}
-
 export function SessionCard({
   session,
   now,
@@ -134,7 +109,7 @@ export function SessionCard({
   const terminalKey = terminal?.toLowerCase();
   const terminalLabel = terminalKey === "codex" ? "Codex" : terminalKey === "claude" ? "Claude" : terminal;
   const terminalIcon = terminalKey === "codex" || terminalKey === "claude" || terminalKey === "cursor";
-  const model = settings.show_model_label && modelLabel(session.model, session.reasoning);
+  const model = settings.show_model_label && session.model_label;
   const subCount = childIds.length;
   const tasksDone = session.tasks.filter(
     (task) => task.status === "completed",
