@@ -29,11 +29,16 @@ class Source:
         return (f'#sourceLocation(file: "{self.path}", line: {first + 1})\n'
                 + "".join(self.lines[first:end]) + "\n#sourceLocation()\n")
 
-    def decl(self, signature):
+    def decl_bounds(self, signature):
         first = self.index(signature)
         indent = signature[:len(signature) - len(signature.lstrip())]
-        end = next(i for i in range(first + 1, len(self.lines)) if self.lines[i].rstrip() == indent + "}")
-        return self.span(first, end + 1)
+        for i in range(first + 1, len(self.lines)):
+            if self.lines[i].rstrip() == indent + "}":
+                return first, i + 1
+        raise ValueError(f"{self.path}: missing closing brace for {signature!r}")
+
+    def decl(self, signature):
+        return self.span(*self.decl_bounds(signature))
 
     def line(self, signature):
         i = self.index(signature)
@@ -52,6 +57,21 @@ APP = "import CodeIslandCore\n" + FOUNDATION
 def core_selections(root):
     def source(name):
         return Source(root, f"Sources/CodeIslandCore/{name}.swift")
+    git = source("GitBranchReader")
+    pointer = "    static func parseGitdirPointer"
+    yield "GitBranchReader", (git.section(until=pointer) + "}\n" +
+        namespace("enum PosixGitPointer", git.decl(pointer)))
+    # Supply Windows volume information before the original metadata reducers
+    # choose a cwd. Both the main session and a parent hydrated from a child
+    # use the same platform adapter. All original statements are preserved.
+    snapshot = source("SessionSnapshot")
+    sections = []
+    cursor = 0
+    for signature in ("public func fillMissingParentMetadataFromSubagentEvent(", "public func extractMetadata("):
+        start, end = snapshot.decl_bounds(signature)
+        sections += [snapshot.span(cursor, start), namespace("extension NativeHookMetadata", snapshot.span(start, end))]
+        cursor = end
+    yield "SessionSnapshot", "".join(sections) + snapshot.span(cursor, len(snapshot.lines))
     task = source("AgentTaskParsing")
     # The only imported Darwin function is memmem; the desktop CRT adapter supplies it.
     yield "AgentTaskParsing", FOUNDATION + task.section("/// A checklist tool")

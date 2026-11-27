@@ -73,6 +73,13 @@ def exercise(core):
         assert reply["prompt"] == "status?" and reply["reply"] == "finished" and not reply["ended"]
         args.update(event="on_session_end", fresh=False, previous=reply)
         assert invoke(context, b"session.reduce", args)["ended"]
+        for root in ("C:/Users/me", "//server/share"):
+            directory = root + "/.cursor/projects/active"
+            path = (directory + "/agent-transcripts/stream.jsonl").replace("/", chr(92))
+            args = {"card": root, "source": "cursor", "event": "PreToolUse", "previous": card,
+                    "fresh": True, "limit": 20, "payload": {"session_id": root, "transcript_path": path}}
+            actual = invoke(context, b"session.reduce", args).get("cwd")
+            assert actual == directory, (directory, actual)
     finally:
         destroy(context)
 

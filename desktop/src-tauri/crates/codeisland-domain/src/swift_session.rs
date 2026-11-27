@@ -10,6 +10,7 @@ pub(crate) struct Reduction {
     pub ended: bool,
     pub failed: bool,
     status: SessionStatus,
+    cwd: Option<String>,
     tool: Option<String>,
     id: Option<String>,
     detail: Option<String>,
@@ -24,6 +25,7 @@ pub(crate) struct Reduction {
 impl Reduction {
     pub(crate) fn project(self, session: &mut SessionSnapshot, event: &AgentEvent) {
         session.status = self.status;
+        if let Some(cwd) = self.cwd { session.cwd = Some(cwd); }
         session.active_tool = self.tool;
         session.tool_use_id = self.id;
         session.active_tool_detail = self.detail;
@@ -57,7 +59,7 @@ pub(crate) fn reduce(
         "answer": matches!(event.event_type, AgentEventType::Message | AgentEventType::TurnEnd)
             .then_some(event.text.as_deref()).flatten(),
         "limit": limit, "previous": {
-            "status":session.status, "executing":session.is_executing_tool, "tool":session.active_tool,
+            "status":session.status, "cwd":session.cwd, "executing":session.is_executing_tool, "tool":session.active_tool,
             "detail":session.active_tool_detail, "id":session.tool_use_id, "prompt":session.last_prompt,
             "reply":session.last_message, "live":session.live_codex_output, "interrupted":session.interrupted,
             "failed":session.last_turn_failed, "tasks":session.tasks,

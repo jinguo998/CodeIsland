@@ -15,11 +15,11 @@ BRIDGE = ROOT / "desktop/swift"
 CORE = (
     "ClaudeConfigPaths", "ConfigPathIdentity", "ExtraConfigDirs", "ClaudeDesktopCodeSession",
     "ClaudeQuota", "ClaudeQuotaScheduler", "ClaudeUsageScanner", "ModelLabel",
-    "GitBranchReader", "ESP32Protocol", "AppleCompanionPayload", "AgentTaskList", "AttentionPolicy", "BackgroundCompactionFilter",
+    "ESP32Protocol", "AppleCompanionPayload", "AgentTaskList", "AttentionPolicy", "BackgroundCompactionFilter",
     "CoworkSession", "CoworkAuditLog", "CodexHooksConfig", "CodexThreadSubsession", "CursorHookPayload",
     "CursorSessionFolding", "DeclaredSubsession", "DisplayOnlyWait", "EventSoundRouting", "SoundVolumeCurve", "SceneMuteState",
     "HermesHookPayload", "HermesSessionStore", "HostHarness", "Models", "PushNotification", "PushPolicy", "SessionRecap",
-    "SessionSnapshot", "SubsessionLink", "SubsessionRouter", "WarpPaneResolver", "HookIntake", "HookEdgeFacts",
+    "SubsessionLink", "SubsessionRouter", "WarpPaneResolver", "HookIntake", "HookEdgeFacts",
     "AntigravityHookContract", "GrokHookForwardingPolicy", "GrokSessionPaths", "EventNormalizer",
     "FollowUpReminderScheduler", "RemoteReconnectPolicy",
 )

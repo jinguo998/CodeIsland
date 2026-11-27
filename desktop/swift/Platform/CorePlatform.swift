@@ -75,7 +75,7 @@ extension ClaudeQuotaClient { public static var desktopSession: URLSession { ses
 
 public enum DesktopPath {
     public static func isWindowsAbsolute(_ path: String) -> Bool {
-        if path.hasPrefix(#"\\"#) { return true }
+        if path.hasPrefix(#"\\"#) || path.hasPrefix("//") { return true }
         let start = Array(path.utf8.prefix(3))
         return start.count == 3 && ((65...90).contains(start[0]) || (97...122).contains(start[0]))
             && start[1] == 58 && (start[2] == 47 || start[2] == 92)
@@ -87,6 +87,15 @@ public enum DesktopPath {
 }
 
 extension GitBranchReader {
+    static func parseGitdirPointer(_ content: String, relativeTo directory: String) -> String? {
+        let line = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if line.hasPrefix("gitdir:") {
+            let target = String(line.dropFirst("gitdir:".count)).trimmingCharacters(in: .whitespaces)
+            if DesktopPath.isWindowsAbsolute(target) { return DesktopPath.withForwardSlashes(target) }
+        }
+        return PosixGitPointer.parseGitdirPointer(content, relativeTo: directory)
+    }
+
     public static func desktopBranch(cwd: String) -> String? {
         let start = DesktopPath.withForwardSlashes(cwd)
         if let branch = read(cwd: start)?.branch { return branch }
@@ -99,15 +108,6 @@ extension GitBranchReader {
             if FileManager.default.fileExists(atPath: git.path, isDirectory: &isDirectory) {
                 if isDirectory.boolValue { return headInfo(gitDir: git.path, isWorktree: false)?.branch }
                 guard let pointer = try? String(contentsOf: git, encoding: .utf8) else { return nil }
-                #if os(Windows)
-                let line = pointer.trimmingCharacters(in: .whitespacesAndNewlines)
-                if line.hasPrefix("gitdir:") {
-                    let target = String(line.dropFirst("gitdir:".count)).trimmingCharacters(in: .whitespaces)
-                    if DesktopPath.isWindowsAbsolute(target) {
-                        return headInfo(gitDir: target, isWorktree: false)?.branch
-                    }
-                }
-                #endif
                 guard let target = parseGitdirPointer(pointer, relativeTo: directory.path) else { return nil }
                 return headInfo(gitDir: target, isWorktree: false)?.branch
             }
@@ -117,4 +117,31 @@ extension GitBranchReader {
         }
         return nil
     }
+}
+
+// Give the original reducers an explicit workspace root for a Windows Cursor transcript.
+// They retain their own precedence for an existing cwd, hook cwd and provider roots.
+struct NativeHookMetadata {
+    static func withVolume(_ event: HookEvent) -> HookEvent {
+        guard let raw = event.rawJSON["transcript_path"] as? String, DesktopPath.isWindowsAbsolute(raw),
+              (event.rawJSON["workspace_roots"] as? [String])?.first?.isEmpty != false else { return event }
+        let path = DesktopPath.withForwardSlashes(raw)
+        guard let marker = path.range(of: "/.cursor/projects/") else { return event }
+        let project = path[marker.upperBound...].prefix { $0 != "/" }
+        guard !project.isEmpty else { return event }
+        var json = event.rawJSON
+        json["workspace_roots"] = [String(path[..<project.endIndex])]
+        return HookEvent(json: json) ?? event
+    }
+}
+
+public func extractMetadata(into sessions: inout [String: SessionSnapshot], sessionId: String, event: HookEvent) {
+    NativeHookMetadata().extractMetadata(into: &sessions, sessionId: sessionId, event: NativeHookMetadata.withVolume(event))
+}
+
+public func fillMissingParentMetadataFromSubagentEvent(
+    into sessions: inout [String: SessionSnapshot], sessionId: String, event: HookEvent
+) {
+    NativeHookMetadata().fillMissingParentMetadataFromSubagentEvent(into: &sessions, sessionId: sessionId,
+                                                                     event: NativeHookMetadata.withVolume(event))
 }

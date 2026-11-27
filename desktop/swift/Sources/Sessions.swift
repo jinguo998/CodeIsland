@@ -7,6 +7,7 @@ import Foundation
 private struct HostCard: Decodable {
     let status: String
     let executing: Bool
+    let cwd: String?
     let tool: String?
     let detail: String?
     let id: String?
@@ -35,6 +36,7 @@ struct TaskRow: Codable, Equatable {
 private extension HostCard {
     func synchronize(_ session: inout SessionSnapshot) {
         session.status = nativeStatus(status, executing: executing)
+        session.cwd = cwd
         session.currentTool = tool
         session.currentToolUseId = id
         session.toolDescription = detail
@@ -60,6 +62,7 @@ private struct ReductionResult: Encodable {
     let removed: Bool
     let applied: Bool
     let ended: Bool
+    let cwd: String?
     let status: String
     let tool: String?
     let id: String?
@@ -116,7 +119,7 @@ struct DesktopSessions {
         }
         if removed { cards.removeValue(forKey: args.card) }
         return try JSONEncoder().encode(ReductionResult(removed: removed, applied: facts.appliedToSession,
-            ended: facts.endedTurn, status: status, tool: session.currentTool, id: session.currentToolUseId,
+            ended: facts.endedTurn, cwd: session.cwd, status: status, tool: session.currentTool, id: session.currentToolUseId,
             detail: session.toolDescription, executing: session.status == .running && session.currentTool != nil,
             prompt: session.lastUserPrompt, reply: session.lastAssistantMessage, live: session.liveCodexOutput,
             interrupted: session.interrupted, failed: failed || session.lastTurnFailed,
