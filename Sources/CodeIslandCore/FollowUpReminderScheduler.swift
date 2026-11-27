@@ -331,6 +331,7 @@ public struct FollowUpReminderScheduler: Sendable {
         if entry.synced {
             entries[key]?.done = true
             entries[key]?.owed = false
+            entries[key]?.delivered = 0
         } else {
             entries.removeValue(forKey: key)
         }

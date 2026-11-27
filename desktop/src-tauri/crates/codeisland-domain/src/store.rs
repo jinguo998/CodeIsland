@@ -1358,6 +1358,12 @@ impl SessionStore {
         self.ordered_ids()
             .into_iter()
             .filter_map(|id| self.sessions.get(&id).cloned())
+            .map(|mut session| {
+                session.model_label = session.model.as_deref().and_then(|model| {
+                    codeisland_swift::call(c"modelLabel", serde_json::json!({ "model": model, "effort": session.reasoning }))
+                });
+                session
+            })
             .collect()
     }
 

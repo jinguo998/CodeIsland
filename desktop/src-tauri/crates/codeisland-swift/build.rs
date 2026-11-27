@@ -20,9 +20,12 @@ fn main() {
     let bin = String::from_utf8(build.stdout).expect("SwiftPM output");
     let name = format!("{}CodeIslandDesktopCore{}", env::consts::DLL_PREFIX, env::consts::DLL_SUFFIX);
     let source = Path::new(bin.trim()).join(&name);
-    // Cargo runs unit/integration binaries from <profile>/deps and the app and
-    // its hooks from <profile>. Installed executables use the same layout.
-    let stage = output.ancestors().nth(3).unwrap().join("swift-core");
+    let stage = output.join("swift-core");
+    println!("cargo:rustc-env=CODEISLAND_BUILT_SWIFT_DIR={}", stage.display());
+    let profile_dir = output.ancestors()
+        .find(|dir| dir.file_name().is_some_and(|name| name == "build"))
+        .and_then(Path::parent).unwrap_or(&output);
+    println!("cargo:rustc-env=CODEISLAND_CARGO_PROFILE_DIR={}", profile_dir.display());
     fs::create_dir_all(&stage).unwrap();
     fs::copy(&source, stage.join(&name)).expect("stage Swift core");
     if cfg!(windows) {

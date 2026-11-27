@@ -418,6 +418,10 @@ pub struct SessionSnapshot {
     pub tool_use_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    // Computed by the shared Swift model formatter when the UI snapshot is built.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -493,6 +497,7 @@ impl SessionSnapshot {
             claude_desktop_session_id: None,
             tool_use_id: None,
             model: event.model.clone(),
+            model_label: None,
             reasoning: event.reasoning.clone(),
             recap: None,
             recap_created_at: None,

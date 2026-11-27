@@ -22,9 +22,12 @@ struct Api {
 static API: LazyLock<Api> = LazyLock::new(|| {
     let exe = std::env::current_exe().expect("get executable path");
     let dir = exe.parent().expect("executable directory");
-    let mut path = dir.join("swift-core").join(libloading::library_filename("CodeIslandDesktopCore"));
-    if !path.is_file() && dir.file_name().is_some_and(|name| name == "deps") {
-        path = dir.parent().unwrap().join("swift-core").join(path.file_name().unwrap());
+    let filename = libloading::library_filename("CodeIslandDesktopCore");
+    let mut path = dir.join("swift-core").join(&filename);
+    // Cargo can put each test executable in its own build directory. An
+    // installed binary always uses its own bundled library and runtime.
+    if !path.is_file() && exe.starts_with(env!("CODEISLAND_CARGO_PROFILE_DIR")) {
+        path = std::path::Path::new(env!("CODEISLAND_BUILT_SWIFT_DIR")).join(&filename);
     }
     // Load the core from the application's directory, including its private
     // Swift runtime on Windows. Never search the current working directory.

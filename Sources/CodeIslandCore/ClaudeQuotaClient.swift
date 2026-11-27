@@ -176,7 +176,7 @@ public enum ClaudeQuotaClient {
         config.httpCookieStorage = nil
         config.httpShouldSetCookies = false
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        return URLSession(configuration: config)
+        return URLSession(configuration: config, delegate: RedirectRefusal.shared, delegateQueue: nil)
     }()
 
     /// Refuses every redirect, so the Authorization header is only ever sent

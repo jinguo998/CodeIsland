@@ -6,6 +6,7 @@ import Foundation
 private final class DesktopContext {
     var reminders = FollowUpReminderScheduler()
     var quota = ClaudeQuotaScheduler()
+    var usage = ClaudeUsageScanner.FileCache()
 }
 
 @_cdecl("codeisland_core_create_v1")
@@ -47,6 +48,17 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
         return try encoder.encode(EventNormalizer.normalize(decoder.decode(String.self, from: data)))
     case "claudeHostID":
         return try encoder.encode(ClaudeDesktopCodeSession.isValidHostSessionId(decoder.decode(String.self, from: data)))
+    case "modelLabel":
+        let args = try decoder.decode(ModelArguments.self, from: data)
+        return try encoder.encode(ModelLabel.label(model: args.model, effort: args.effort))
+    case "scanUsage":
+        guard let state else { throw BridgeError.missingContext }
+        let args = try decoder.decode(ScanArguments.self, from: data)
+        let result = ClaudeUsageScanner.scan(claudeHomes: args.roots, now: args.date, cache: &state.usage)
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        return try encoder.encode(state.usage.isEmpty ? nil : UsageReply(result))
+    case "fetchQuota":
+        return try fetchQuota(in: decoder.decode(String.self, from: data))
     case "parseQuota":
         // Malformed provider responses are a normal client result.
         let snapshot = try? ClaudeQuotaSnapshot.parse(data)
@@ -113,7 +125,7 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
     }
 }
 
-private struct QuotaRow: Encodable {
+struct QuotaRow: Encodable {
     let kind: String
     let percent: Double
     let severity: String
@@ -129,7 +141,7 @@ private struct QuotaRow: Encodable {
     }
 }
 
-private func microseconds(_ date: Date) -> Int64 {
+func microseconds(_ date: Date) -> Int64 {
     Int64((date.timeIntervalSince1970 * 1_000_000).rounded())
 }
 
@@ -181,5 +193,27 @@ private struct ReminderRow: Codable {
                          maxAttempts: key.kind.maxAttempts,
                          waitingSince: Date(timeIntervalSince1970: Double(waiting_since) / 1_000_000),
                          delivery: delivery, origin: origin, requestId: request_id, turnFailed: turn_failed)
+    }
+}
+
+private struct ModelArguments: Decodable {
+    let model: String?
+    let effort: String?
+}
+
+private struct ScanArguments: Decodable, Timed {
+    let roots: [String]
+    let now: Int64
+}
+
+private struct UsageReply: Encodable {
+    let last_5h: ClaudeUsageTotals
+    let today: ClaudeUsageTotals
+    let hourlyOutputTokens: [Int]
+
+    init(_ scan: ClaudeUsageScanner.Snapshot) {
+        last_5h = scan.last5h
+        today = scan.today
+        hourlyOutputTokens = scan.hourlyOutputTokens
     }
 }

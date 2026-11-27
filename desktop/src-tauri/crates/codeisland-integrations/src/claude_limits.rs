@@ -1,11 +1,11 @@
 //! Claude Code subscription windows and event-driven refresh policy.
 
 use std::path::Path;
-use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -48,75 +48,59 @@ impl FetchError {
     }
 }
 
-static CLIENT: LazyLock<Result<reqwest::Client, reqwest::Error>> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-});
+// The Swift client receives the configured directory. OAuth credentials stay
+// inside the native client and never cross the desktop bridge.
+#[derive(Deserialize)]
+struct Row {
+    kind: Kind,
+    percent: f64,
+    severity: String,
+    #[serde(default, with = "chrono::serde::ts_microseconds_option")]
+    resets_at: Option<DateTime<Utc>>,
+    scope_label: Option<String>,
+}
+
+impl From<Row> for Limit {
+    fn from(row: Row) -> Self {
+        Self { kind: row.kind, percent: row.percent, severity: row.severity,
+               resets_at: row.resets_at, scope_label: row.scope_label }
+    }
+}
 
 pub async fn fetch(claude_dir: &Path) -> Result<Snapshot, FetchError> {
-    let path = claude_dir.join(".credentials.json");
-    let (token, expires_at) = tokio::task::spawn_blocking(move || {
-        let bytes = std::fs::read(path).ok()?;
-        parse_credential(&bytes)
-    })
-    .await
-    .ok()
-    .flatten()
-    .ok_or(FetchError::NoCredential)?;
-    if expires_at.is_some_and(|time| time <= Utc::now()) {
-        return Err(FetchError::Unauthorized);
-    }
-
-    let response = CLIENT
-        .as_ref()
-        .map_err(|_| FetchError::Transport)?
-        .get("https://api.anthropic.com/api/oauth/usage")
-        .bearer_auth(token)
-        .header("anthropic-beta", "oauth-2025-04-20")
-        .header("accept", "application/json")
-        .header("user-agent", "CodeIsland")
-        .send()
-        .await
-        .map_err(|_| FetchError::Transport)?;
-    match response.status().as_u16() {
-        200..=299 => {
-            let value = response.json().await.map_err(|_| FetchError::Parse)?;
-            parse_snapshot(&value, Utc::now()).ok_or(FetchError::Parse)
-        }
-        401 | 403 => Err(FetchError::Unauthorized),
-        429 => Err(FetchError::RateLimited),
-        status => Err(FetchError::Http(status)),
-    }
-}
-
-fn parse_credential(bytes: &[u8]) -> Option<(String, Option<DateTime<Utc>>)> {
-    let value: Value = serde_json::from_slice(bytes).ok()?;
-    let oauth = &value["claudeAiOauth"];
-    let token = oauth["accessToken"]
-        .as_str()
-        .filter(|token| !token.is_empty())?;
-    let expires_at = oauth["expiresAt"]
-        .as_f64()
-        .and_then(|millis| DateTime::from_timestamp_millis(millis as i64));
-    Some((token.to_owned(), expires_at))
-}
-
-fn parse_snapshot(value: &Value, fetched_at: DateTime<Utc>) -> Option<Snapshot> {
     #[derive(Deserialize)]
-    struct Row {
-        kind: Kind, percent: f64, severity: String,
-        #[serde(default, with = "chrono::serde::ts_microseconds_option")]
-        resets_at: Option<DateTime<Utc>>,
-        scope_label: Option<String>,
+    #[serde(untagged)]
+    enum Response {
+        Success {
+            limits: Vec<Row>,
+            #[serde(with = "chrono::serde::ts_microseconds")]
+            fetched_at: DateTime<Utc>,
+        },
+        Failure { error: String, status: Option<u16> },
     }
+    let directory = claude_dir.to_owned();
+    let result = tokio::task::spawn_blocking(move || {
+        codeisland_swift::call::<Response>(c"fetchQuota", directory.to_string_lossy())
+    }).await.map_err(|_| FetchError::Transport)?;
+    match result {
+        Response::Success { limits, fetched_at } => Ok(Snapshot {
+            limits: limits.into_iter().map(Limit::from).collect(), fetched_at,
+        }),
+        Response::Failure { error, status } => Err(match error.as_str() {
+            "no_credential" => FetchError::NoCredential,
+            "unauthorized" => FetchError::Unauthorized,
+            "rate_limited" => FetchError::RateLimited,
+            "http" => FetchError::Http(status.unwrap_or(0)),
+            "parse" => FetchError::Parse,
+            _ => FetchError::Transport,
+        }),
+    }
+}
+
+#[cfg(test)]
+fn parse_snapshot(value: &Value, fetched_at: DateTime<Utc>) -> Option<Snapshot> {
     let rows: Vec<Row> = codeisland_swift::call::<Option<Vec<Row>>>(c"parseQuota", value)?;
-    let limits = rows.into_iter().map(|row| Limit {
-        kind: row.kind, percent: row.percent, severity: row.severity,
-        resets_at: row.resets_at, scope_label: row.scope_label,
-    }).collect();
-    Some(Snapshot { limits, fetched_at })
+    Some(Snapshot { limits: rows.into_iter().map(Limit::from).collect(), fetched_at })
 }
 
 #[derive(Default)]
@@ -157,6 +141,12 @@ impl Scheduler {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn shared_client_reports_a_missing_credential() {
+        let directory = std::env::temp_dir().join(format!("codeisland-missing-quota-{}", std::process::id()));
+        assert!(matches!(fetch(&directory).await, Err(FetchError::NoCredential)));
+    }
 
     #[test]
     fn supports_both_usage_responses_and_takes_the_first_window_of_each_kind() {

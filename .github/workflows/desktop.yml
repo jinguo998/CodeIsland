@@ -55,7 +55,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Test the shared sources in the macOS package
-        run: swift test --filter 'FollowUpReminderSchedulerTests|ClaudeQuotaTests|ClaudeQuotaSchedulerTests|RemoteReconnectPolicyTests'
+        run: swift test --filter 'FollowUpReminderSchedulerTests|ClaudeQuotaTests|ClaudeQuotaSchedulerTests|RemoteReconnectPolicyTests|ClaudeUsageScannerTests|ModelLabelTests'
 
   rust:
     name: Rust crates
@@ -118,8 +118,18 @@ jobs:
         run: cargo test --workspace
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2"
-      - name: Build executable (no bundle)
-        run: cargo tauri build --no-bundle
+      - name: Build Windows installer
+        run: cargo tauri build --bundles nsis
+      - name: Load the Swift core from the installer without the Swift SDK
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe -ErrorAction Stop | Select-Object -First 1
+          $dest = Join-Path $env:RUNNER_TEMP "installed-codeisland"
+          & 7z x $installer.FullName "-o$dest" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Could not extract the installer." }
+          $swift = Get-ChildItem $dest -Recurse -Filter CodeIslandDesktopCore.dll | Select-Object -First 1
+          if (-not $swift -or $swift.Directory.Name -ne "swift-core") { throw "Swift core missing from installer." }
+          python scripts/check-swift-bundle.py $swift.DirectoryName
 
   bundle:
     name: Bundle release

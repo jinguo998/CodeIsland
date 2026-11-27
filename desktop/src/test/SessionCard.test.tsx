@@ -44,6 +44,7 @@ describe("SessionCard", () => {
       is_executing_tool: true,
       active_tool: "Edit",
       model: "claude-sonnet-4-5",
+      model_label: "Sonnet 4.5 · high",
       reasoning: "high",
       terminal_kind: "Windows Terminal",
     });

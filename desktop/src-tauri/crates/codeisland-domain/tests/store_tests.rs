@@ -1036,3 +1036,13 @@ fn explicitly_removed_idle_families_need_fresh_work_to_revive() {
     child_returns.timestamp = now + Duration::seconds(3);
     assert!(store.apply(&child_returns).applied);
 }
+
+#[test]
+fn publishes_the_original_swift_model_label() {
+    let mut store = SessionStore::default();
+    let mut event = AgentEvent::new("model-card", AgentKind::Claude, AgentEventType::UserPrompt);
+    event.model = Some("claude-sonnet-4-5".into());
+    event.reasoning = Some("high".into());
+    store.apply(&event);
+    assert_eq!(store.snapshot().sessions[0].model_label.as_deref(), Some("Sonnet 4.5 · high"));
+}

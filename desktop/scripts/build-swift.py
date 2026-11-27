@@ -10,11 +10,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 BRIDGE = ROOT / "desktop/swift"
 CORE = (
-    "ClaudeConfigPaths", "ConfigPathIdentity", "ExtraConfigDirs", "ClaudeDesktopCodeSession", "ClaudeQuota", "ClaudeQuotaClient", "ClaudeQuotaScheduler",
+    "ClaudeConfigPaths", "ConfigPathIdentity", "ExtraConfigDirs", "ClaudeDesktopCodeSession", "ClaudeQuota", "ClaudeQuotaClient", "ClaudeQuotaScheduler", "ClaudeUsageScanner", "ModelLabel",
     "EventNormalizer", "FollowUpReminderScheduler", "RemoteReconnectPolicy",
 )
 TESTS = ("ClaudeQuotaTests", "ClaudeQuotaSchedulerTests", "FollowUpReminderSchedulerTests",
-         "RemoteReconnectPolicyTests")
+         "RemoteReconnectPolicyTests", "ClaudeUsageScannerTests", "ModelLabelTests")
 
 
 def stage(sources, destination):
