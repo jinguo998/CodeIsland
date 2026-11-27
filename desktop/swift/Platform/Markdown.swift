@@ -1,4 +1,4 @@
-#if !canImport(Darwin)
+#if os(Windows) || os(Linux)
 import Foundation
 import cmark_gfm
 import cmark_gfm_extensions

@@ -15,7 +15,7 @@ pub fn render_response(
         "format": format, "action": decision.action, "text": decision.text,
         "question": event.event_type == AgentEventType::Question,
         "event": event.raw_event_name.as_deref().unwrap_or("PermissionRequest"),
-        "source": source, "tool": event.tool, "payload": event.payload,
+        "source": source, "card": event.session_id, "tool": event.tool, "payload": event.payload,
     }));
     (answer.unwrap_or_else(|| fallback.to_owned()), 0)
 }

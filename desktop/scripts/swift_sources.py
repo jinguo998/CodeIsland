@@ -1,8 +1,7 @@
-"""Select unmodified source from the macOS checkout for a standalone SwiftPM target.
+"""Legacy source extraction for declarations in mixed macOS files.
 
-Whole files are copied verbatim by build-swift.py. For files that also contain a
-Cocoa view, Unix socket or Darwin file watcher, only the named source ranges are
-compiled. Boundaries must be unique. There is no substitution in source bodies.
+Each selection generates a second Swift source file in the build directory.
+Whole-file references are listed separately in build-swift.py.
 """
 from pathlib import Path
 
@@ -67,26 +66,6 @@ APP = "import CodeIslandCore\n" + FOUNDATION
 def core_selections(root):
     def source(name):
         return Source(root, f"Sources/CodeIslandCore/{name}.swift")
-    # Foundation exposes the CRT's memchr on Windows and Linux.
-    yield "HookOrigin", source("HookOrigin").section("import Foundation")
-    git = source("GitBranchReader")
-    pointer = "    static func parseGitdirPointer"
-    yield "GitBranchReader", (git.section(until=pointer) + "}\n" +
-        namespace("enum PosixGitPointer", git.decl(pointer)))
-    # Supply Windows volume information before the original metadata reducers
-    # choose a cwd. Both the main session and a parent hydrated from a child
-    # use the same platform adapter. All original statements are preserved.
-    snapshot = source("SessionSnapshot")
-    sections = []
-    cursor = 0
-    for signature in ("public func fillMissingParentMetadataFromSubagentEvent(", "public func extractMetadata("):
-        start, end = snapshot.decl_bounds(signature)
-        sections += [snapshot.span(cursor, start), namespace("extension NativeHookMetadata", snapshot.span(start, end))]
-        cursor = end
-    yield "SessionSnapshot", "".join(sections) + snapshot.span(cursor, len(snapshot.lines))
-    task = source("AgentTaskParsing")
-    # The only imported Darwin function is memmem; the desktop CRT adapter supplies it.
-    yield "AgentTaskParsing", FOUNDATION + task.section("/// A checklist tool")
     tail = source("JSONLTailer")
     scanner = (FOUNDATION + tail.section("public enum ConversationTurnStatus", "public final class JSONLTailer")
                + "public final class JSONLTailer {\n" + tail.section("    public struct ScanResult"))
@@ -99,18 +78,12 @@ def core_selections(root):
         tail.section('        if json["isMeta"]', "    /// How Claude Code records"))
     ai = source("AiWorkWatchClient")
     yield "AiWorkStatusMapper", FOUNDATION + ai.section("public enum AiWorkStatusMapper", "    public static func fetchBusyDaemonSessionIds") + "}\n"
-    codex = source("CodexAppServerClient")
-    yield "CodexAppServerClient", (codex.section(until="public final class CodexAppServerClient") +
-        namespace("public enum CodexAppServerClient", codex.decl("    public static func drainMessages"),
-                  codex.decl("    public static func parseMessage")))
     quota = source("ClaudeQuotaClient")
     yield "ClaudeQuotaClient", (NETWORK + quota.section(until="    /// Raw item data from the login keychain")
         + quota.decl("    public static func readFile") + "}\n" + quota.section("public enum ClaudeQuotaClientError"))
     push = source("PushTransport")
     yield "PushTransport", (NETWORK + push.section(until="public final class URLSessionPushTransport") +
         namespace("public enum URLSessionPushTransport", push.decl("    static func retryAfter")))
-    channel = source("PushChannel")
-    yield "PushChannel", NETWORK + channel.section()
 
 
 def app_selections(root):
@@ -133,14 +106,10 @@ def app_selections(root):
             settings.part("    var autoApproveSources:", "            let entries = raw.split", "        set {"))
     state = source("AppState")
     shortcuts = source("AppState+CardShortcuts")
-    yield "CardShortcut", (APP + source("IslandSurface").section()
+    yield "CardShortcut", (APP
         + source("Settings").section("enum ShortcutAction:", "    var defaultBinding: ShortcutBinding?") + "}\n"
         + namespace("extension DesktopCardShortcut", shortcuts.decl("    enum CardShortcutOutcome:"),
             shortcuts.decl("    func performCardShortcut(")))
-    intake = Source(root, "Sources/CodeIslandCore/HookIntake.swift")
-    yield "AnswerTransport", APP + namespace("struct DesktopAnswerTransport",
-        "    let waitsForAnswer: Bool\n    let answerFormat: HookIntake.AnswerFormat\n",
-        intake.decl("    public func stdout(forAnswer"))
     calls = source("AppState+ToolUseCache")
     yield "HookAnswers", APP + namespace("struct DesktopHookAnswers",
         "    static func askItems(_ event: HookEvent) -> [AskUserQuestionItem] {\n" +
@@ -191,7 +160,6 @@ def app_selections(root):
         remote.decl("    private static func isUID("), remote.decl("    static func socketOwnerUID("),
         remote.decl("    static func remoteOpencodePluginForInstall("), remote.decl("    private static func jsonStringLiteral("))
     installer = source("ConfigInstaller")
-    yield "JSONMinimalEditor", source("JSONMinimalEditor").section()
     yield "InstallerCatalog", (APP + installer.decl("enum HookFormat {") + installer.decl("struct CLIConfig {") +
         namespace("extension ConfigInstaller",
             installer.section("    static func displayCodexPath", "    /// How many agents"),
@@ -224,8 +192,6 @@ def app_selections(root):
         ordering.section("    var tier: Int", "enum SessionListOrdering") +
         namespace("enum SessionListOrdering", ordering.decl("    static func order("),
                   ordering.decl("    static func requestRank(")))
-    idle = source("IdleSessionRemoval")
-    yield "IdleSessionRemoval", idle.section()
     yield "DesktopAppRouting", APP + namespace("enum AppState",
         source("AppState+DisplayOnlyWaits").decl("    nonisolated static func displayOnlyWaitAsk(forHookEvent"),
         source("AppState+CodexAppServer").line("    nonisolated static let codexAppBundleId"),
@@ -233,7 +199,6 @@ def app_selections(root):
     redaction = source("DiagnosticsRedaction")
     yield "DiagnosticText", (redaction.section(until="    static func redactedConfig(")
         + redaction.section("    /// `value` with its secrets replaced"))
-    yield "AnimationSpeed", FOUNDATION + source("NotchAnimationMetrics").decl("enum NotchAnimationSpeed")
     esp = source("ESP32StatePublisher")
     yield "CompanionState", APP + namespace("extension DesktopCompanion",
         esp.decl("    private struct BuddyDisplayContext {"), esp.decl("    func esp32DisplaySessionId("),
@@ -286,9 +251,6 @@ def app_selections(root):
 
 
 def test_selections(root):
-    for name in ("HookServerCwdFilterTests", "RemoteCwdFilterTests"):
-        case = Source(root, f"Tests/CodeIslandTests/{name}.swift")
-        yield name, "import XCTest\n@testable import CodeIslandDesktopCore\n" + case.section("final class ")
     def source(name):
         return Source(root, f"Tests/CodeIslandCoreTests/{name}.swift")
     q = source("ClaudeQuotaTests")
@@ -296,10 +258,6 @@ def test_selections(root):
     t = source("JSONLTailerTests")
     yield "JSONLTailerTests", (t.section(until="    func testAttachAndDetectAppendedLine") +
                                t.section("    func testScanTailForAttachSkips"))
-    c = source("CodexAppServerClientTests")
-    yield "CodexAppServerClientTests", c.section(until="    func testProcessExitDisarmsReadabilityHandlers") + "}\n"
-    signing = source("PushSigningAndResponseTests")
-    yield "PushSigningAndResponseTests", NETWORK + signing.section()
     golden = source("BridgeGoldenHarness")
     yield "BridgeGoldenHarness", (FOUNDATION + "import XCTest\n#if canImport(CoreFoundation)\nimport CoreFoundation\n#endif\n" +
         golden.section("struct BridgeGoldenFixture", "final class BridgeGoldenRunner"))

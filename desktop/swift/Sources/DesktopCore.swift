@@ -439,5 +439,5 @@ func bridgeHook(_ data: Data, eventName: String? = nil, forDisplay: Bool = false
     if let path = payload["transcript_path"] as? String {
         payload["transcript_path"] = DesktopPath.withForwardSlashes(path)
     }
-    return HookEvent(json: payload)
+    return HookEvent(json: payload).map(DesktopPath.withWorkspaceVolume)
 }

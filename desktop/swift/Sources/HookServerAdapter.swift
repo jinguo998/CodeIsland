@@ -17,7 +17,10 @@ struct DesktopWebhookFilter {
     let filter: String?
     func string(forKey key: String) -> String? { filter }
 }
-enum SettingsKey { static let webhookEventFilter = "webhookEventFilter" }
+enum SettingsKey {
+    static let webhookEventFilter = "webhookEventFilter"
+    static let notchAnimationSpeed = "notchAnimationSpeed"
+}
 
 private func hookFields(_ event: HookEvent) -> [String: Any] {
     let route = HookServer.routeKind(for: event)
@@ -143,8 +146,10 @@ private func desktopAnswer(_ event: HookEvent, args: [String: Any]) -> Data {
             answers: choices.flatMap { $0.isEmpty ? nil : $0 } ?? [key: answer])
     }
     if format == "gemini" {
-        let transport = DesktopAnswerTransport(waitsForAnswer: true, answerFormat: .geminiDecision)
-        return transport.stdout(forAnswer: denied ? DesktopHookAnswers.deny() : DesktopHookAnswers.plainAllowAnswer) ?? Data()
+        let source = SessionSnapshot.normalizedSupportedSource(args["source"] as? String) ?? "gemini"
+        let facts = HookIntake.Facts(sourceTag: source, eventTag: event.eventName)
+        let intake = HookIntake(stdin: event.rawJSON, facts: facts)
+        return intake?.stdout(forAnswer: denied ? DesktopHookAnswers.deny() : DesktopHookAnswers.plainAllowAnswer) ?? Data()
     }
     if format == "claude" || format == "codex" {
         if denied { return DesktopHookAnswers.deny() }

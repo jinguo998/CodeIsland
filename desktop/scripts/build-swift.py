@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Build the macOS core sources and their original tests for the native desktop host."""
 import argparse
+import hashlib
 import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -22,7 +24,12 @@ CORE = (
     "ChatMessageTextFormatter", "MarkdownBlockParser", "MarkdownInlineLiterals", "MarkdownPreviewText", "TextRenderCache",
     "SubsessionLink", "SubsessionRouter", "WarpPaneResolver", "HookIntake", "HookEdgeFacts",
     "AntigravityHookContract", "GrokHookForwardingPolicy", "GrokSessionPaths", "EventNormalizer",
-    "FollowUpReminderScheduler", "RemoteReconnectPolicy",
+    "FollowUpReminderScheduler", "RemoteReconnectPolicy", "SessionSnapshot", "PushChannel", "CodexAppServerClient",
+    "HookOrigin", "AgentTaskParsing", "GitBranchReader",
+)
+APP = (
+    "CodexPermissionRules.swift", "Discovery/SQLiteReader.swift", "RemoteHost.swift",
+    "IslandSurface.swift", "IdleSessionRemoval.swift", "JSONMinimalEditor.swift", "NotchAnimationMetrics.swift",
 )
 TESTS = (
     "ChatMessageTextFormatterTests", "MarkdownBlockParserTests", "MarkdownInlineLiteralsTests", "MarkdownPreviewTextTests",
@@ -33,37 +40,90 @@ TESTS = (
     "ModelLabelTests", "CoworkSessionTests", "CoworkAuditLogTests", "AgentTaskListTests", "AttentionPolicyTests", "DerivedSessionStateTests",
     "HookEventFactsTests", "HookEventToolUseIdTests", "OutOfOrderToolStepTests", "PushChannelPayloadTests", "PushRedactionTests",
     "PushPolicyTests", "ReplyCompletePlaceholderTests", "SessionRecapTests", "SubsessionReducerTests", "SubsessionRouterTests",
-    "SubsessionTestSupport",
+    "SubsessionTestSupport", "PushSigningAndResponseTests", "CodexAppServerClientTests",
 )
-MAC_TESTS = ("ClaudeQuotaTests", "JSONLTailerTests", "PushSigningAndResponseTests", "CodexAppServerClientTests",
+MAC_TESTS = ("ClaudeQuotaTests", "JSONLTailerTests",
              "SessionListOrderingTests", "IdleSessionRemovalTests", "CodexAutoReviewRoutingTests", "ApprovalTrustBoundaryTests",
              "AppStateToolUseCacheTests", "AppStateCodexTranscriptTests", "ClaudeSessionRecordPairingTests", "SQLiteReaderClosedWALTests")
 
 
-def stage(sources, destination, selections=()):
-    destination.mkdir(parents=True, exist_ok=True)
-    inputs = {source.name: source.read_bytes() for source in sources}
+def link_directory(link, original):
+    """Give SwiftPM a path inside the package that resolves to the checkout itself."""
+    if link.exists():
+        if not link.samefile(original):
+            raise ValueError(f"{link} already points somewhere other than {original}")
+        return
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if os.name == "nt":
+            # NTFS junctions work across local volumes without Developer Mode or elevation.
+            subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                            "$ErrorActionPreference = 'Stop'; New-Item -ItemType Junction "
+                            "-Path $env:CODEISLAND_LINK -Target $env:CODEISLAND_ORIGINAL | Out-Null"],
+                           env={**os.environ, "CODEISLAND_LINK": str(link), "CODEISLAND_ORIGINAL": str(original)},
+                           check=True)
+        else:
+            link.symlink_to(os.path.relpath(original, link.parent), target_is_directory=True)
+    except (FileExistsError, subprocess.CalledProcessError):
+        if not link.is_dir() or not link.samefile(original):
+            raise
+    if not link.samefile(original):
+        raise ValueError(f"{link} does not reference {original}")
+
+
+def write_changed(path, content):
+    if path.is_file() and path.read_bytes() == content:
+        return
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        handle.write(content)
+    try:
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def source_list(root, files):
+    """Exclude unused neighbours of the referenced files without traversing their trees."""
+    files = sorted(Path(name) for name in files)
+    directories = {parent for path in files for parent in path.parents}
+    used = directories.union(files)
+    excluded = sorted(
+        entry.relative_to(root).as_posix() for parent in directories for entry in (root / parent).iterdir()
+        if entry.relative_to(root) not in used
+    )
+    return {"sources": [path.as_posix() for path in files], "exclude": excluded}
+
+
+def target_inputs(package, target, original, files, adapters, selections):
+    root = package / "Targets" / target
+    link_directory(root / "Original", original)
+    link_directory(root / "Desktop", adapters)
+    inputs = ["Original/" + name for name in files]
+    inputs += ["Desktop/" + path.name for path in sorted(adapters.glob("*.swift"))]
+    # These are the remaining mixed macOS files whose definitions still get extracted.
+    # Keep them explicit in the compiler input list, separate from original source references.
+    generated = root / "Selected"
+    generated.mkdir(exist_ok=True)
     for name, content in selections:
-        filename = f"Selected{name}.swift"
-        if filename in inputs:
-            raise ValueError(f"duplicate Swift build input: {filename}")
-        inputs[filename] = content.encode("utf-8")
-    for name, content in inputs.items():
-        output = destination / name
-        if not output.exists() or output.read_bytes() != content:
-            output.write_bytes(content)
-    for stale in destination.glob("*.swift"):
-        if stale.name not in inputs:
-            stale.unlink()
+        filename = "Selected" + name + ".swift"
+        write_changed(generated / filename, content.encode("utf-8"))
+        inputs.append("Selected/" + filename)
+    return source_list(root, inputs)
 
 
 def sound_assets(check):
-    source = (ROOT / "Sources/CodeIslandCore/SoundVolumeCurve.swift").read_text(encoding="utf-8")
-    program = source + """
+    with tempfile.TemporaryDirectory() as folder:
+        scratch = Path(folder)
+        main = scratch / "main.swift"
+        main.write_text("""import Foundation
 let amplitudes = (0...100).map { SoundVolumeCurve.amplitude(forPercent: $0) }
 print(String(decoding: try JSONEncoder().encode(amplitudes), as: UTF8.self))
-"""
-    result = subprocess.run(["swift", "-"], input=program, text=True, capture_output=True, check=True)
+""", encoding="utf-8")
+        binary = scratch / ("sound-assets.exe" if os.name == "nt" else "sound-assets")
+        subprocess.run(["swiftc", str(ROOT / "Sources/CodeIslandCore/SoundVolumeCurve.swift"),
+                        str(main), "-o", str(binary)], check=True)
+        result = subprocess.run([str(binary)], text=True, capture_output=True, check=True)
     asset = ROOT / "desktop/src/lib/soundVolume.json"
     values = json.loads(result.stdout)
     if check:
@@ -91,22 +151,34 @@ def main():
     package = (args.scratch / "package").resolve()
     if any(package.is_relative_to(ROOT / name) for name in ("Sources", "Tests")):
         parser.error("--scratch must be outside the original source and test directories")
-    # SwiftPM requires every target to be inside its package. The staging area
-    # works across volumes on Windows without symlink privileges. It never
-    # writes the macOS package or its dependency lockfile.
-    stage([BRIDGE / "Package.swift", BRIDGE / "Package.resolved"], package)
-    core_files = [ROOT / "Sources/CodeIslandCore" / f"{name}.swift" for name in CORE]
-    stage([*core_files, *sorted((BRIDGE / "Platform").glob("*.swift"))], package / "Sources/CodeIslandCore", core_selections(ROOT))
-    stage((BRIDGE / "SQLite3").iterdir(), package / "Sources/SQLite3")
-    stage((BRIDGE / "CryptoKit").glob("*.swift"), package / "Sources/CryptoKit")
-    app_files = [ROOT / "Sources/CodeIsland" / name for name in ("CodexPermissionRules.swift", "Discovery/SQLiteReader.swift", "RemoteHost.swift")]
-    stage([*sorted((BRIDGE / "Sources").glob("*.swift")), *app_files], package / "Sources/CodeIslandDesktopCore", app_selections(ROOT))
-    tests = [ROOT / "Tests/CodeIslandCoreTests" / f"{name}.swift" for name in TESTS]
-    stage([*tests, *sorted((BRIDGE / "Tests").glob("*.swift"))], package / "Tests/CodeIslandCoreTests", test_selections(ROOT))
+    package.mkdir(parents=True, exist_ok=True)
+    write_changed(package / "Package.resolved", (BRIDGE / "Package.resolved").read_bytes())
+    link_directory(package / "Targets/SQLite3", BRIDGE / "SQLite3")
+    link_directory(package / "Targets/CryptoKit", BRIDGE / "CryptoKit")
+    link_directory(package / "Targets/CodeIslandAppTests", ROOT / "Tests/CodeIslandTests")
+    sources = {
+        "CodeIslandCore": target_inputs(package, "CodeIslandCore", ROOT / "Sources/CodeIslandCore",
+            (name + ".swift" for name in CORE), BRIDGE / "Platform", core_selections(ROOT)),
+        "CodeIslandDesktopCore": target_inputs(package, "CodeIslandDesktopCore", ROOT / "Sources/CodeIsland",
+            APP, BRIDGE / "Sources", app_selections(ROOT)),
+        "CodeIslandCoreTests": target_inputs(package, "CodeIslandCoreTests", ROOT / "Tests/CodeIslandCoreTests",
+            (name + ".swift" for name in TESTS), BRIDGE / "Tests", test_selections(ROOT)),
+        "CodeIslandAppTests": source_list(package / "Targets/CodeIslandAppTests",
+            ["HookServerCwdFilterTests.swift", "RemoteCwdFilterTests.swift"]),
+    }
+    paths = json.dumps(sources, indent=2).encode()
+    write_changed(package / "inputs.json", paths)
+    # SwiftPM's manifest cache keys on Package.swift, including when only the list changes.
+    stamp = hashlib.sha256(paths).hexdigest()
+    write_changed(package / "Package.swift", (BRIDGE / "Package.swift").read_bytes() +
+                  f"\n// Target inputs: {stamp}\n".encode())
     base = ["swift", args.action, "--package-path", str(package), "-c", args.configuration]
     if jobs := os.environ.get("NUM_JOBS"):
         base += ["--jobs", jobs]
     if args.action == "test":
+        if os.name == "nt":
+            # The upstream subprocess fixture launches /bin/sh and exercises Unix pipes.
+            base += ["--skip", "CodexAppServerClientTests.testProcessExitDisarmsReadabilityHandlers"]
         subprocess.run(base, check=True)
     else:
         subprocess.run(base + ["--product", "CodeIslandDesktopCore"], check=True, stdout=sys.stderr)

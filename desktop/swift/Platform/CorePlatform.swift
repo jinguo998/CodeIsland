@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+@_exported import FoundationNetworking
+#endif
 
 // The desktop keeps custom agent settings in its JSON store. Scope a snapshot
 // to the current call so independent hooks never share mutable preferences.
@@ -63,7 +66,7 @@ extension FollowUpReminderKind: Codable {}
 extension FollowUpReminder.Origin: Codable {}
 extension FollowUpReminder.Delivery: Codable {}
 
-#if !canImport(Darwin)
+#if os(Windows) || os(Linux)
 func CFNumberIsFloatType(_ value: NSNumber) -> Bool {
     ["f", "d"].contains(String(cString: value.objCType))
 }
@@ -102,13 +105,13 @@ public enum DesktopPath {
 }
 
 extension GitBranchReader {
-    static func parseGitdirPointer(_ content: String, relativeTo directory: String) -> String? {
+    static func desktopGitdirPointer(_ content: String, relativeTo directory: String) -> String? {
         let line = content.trimmingCharacters(in: .whitespacesAndNewlines)
         if line.hasPrefix("gitdir:") {
             let target = String(line.dropFirst("gitdir:".count)).trimmingCharacters(in: .whitespaces)
             if DesktopPath.isWindowsAbsolute(target) { return DesktopPath.withForwardSlashes(target) }
         }
-        return PosixGitPointer.parseGitdirPointer(content, relativeTo: directory)
+        return parseGitdirPointer(content, relativeTo: directory)
     }
 
     public static func desktopBranch(cwd: String) -> String? {
@@ -123,7 +126,7 @@ extension GitBranchReader {
             if FileManager.default.fileExists(atPath: git.path, isDirectory: &isDirectory) {
                 if isDirectory.boolValue { return headInfo(gitDir: git.path, isWorktree: false)?.branch }
                 guard let pointer = try? String(contentsOf: git, encoding: .utf8) else { return nil }
-                guard let target = parseGitdirPointer(pointer, relativeTo: directory.path) else { return nil }
+                guard let target = desktopGitdirPointer(pointer, relativeTo: directory.path) else { return nil }
                 return headInfo(gitDir: target, isWorktree: false)?.branch
             }
             let parent = directory.deletingLastPathComponent()
@@ -136,8 +139,8 @@ extension GitBranchReader {
 
 // Give the original reducers an explicit workspace root for a Windows Cursor transcript.
 // They retain their own precedence for an existing cwd, hook cwd and provider roots.
-struct NativeHookMetadata {
-    static func withVolume(_ event: HookEvent) -> HookEvent {
+extension DesktopPath {
+    public static func withWorkspaceVolume(_ event: HookEvent) -> HookEvent {
         guard let raw = event.rawJSON["transcript_path"] as? String, DesktopPath.isWindowsAbsolute(raw),
               (event.rawJSON["workspace_roots"] as? [String])?.first?.isEmpty != false else { return event }
         let path = DesktopPath.withForwardSlashes(raw)
@@ -148,17 +151,6 @@ struct NativeHookMetadata {
         json["workspace_roots"] = [String(path[..<project.endIndex])]
         return HookEvent(json: json) ?? event
     }
-}
-
-public func extractMetadata(into sessions: inout [String: SessionSnapshot], sessionId: String, event: HookEvent) {
-    NativeHookMetadata().extractMetadata(into: &sessions, sessionId: sessionId, event: NativeHookMetadata.withVolume(event))
-}
-
-public func fillMissingParentMetadataFromSubagentEvent(
-    into sessions: inout [String: SessionSnapshot], sessionId: String, event: HookEvent
-) {
-    NativeHookMetadata().fillMissingParentMetadataFromSubagentEvent(into: &sessions, sessionId: sessionId,
-                                                                     event: NativeHookMetadata.withVolume(event))
 }
 
 import CryptoKit

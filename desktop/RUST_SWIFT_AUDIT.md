@@ -1,6 +1,10 @@
 # Windows Rust 与原版 Swift 对照
 
-覆盖 `desktop/src-tauri` 的 91 个已跟踪 Rust 文件，包括构建入口和集成测试。下表中的 Swift 符号均来自仓库的 `Sources/`。Windows 构建读取整份原文件，或从同时包含 AppKit、Darwin 代码的文件中选取原始声明。选择规则见 [swift_sources.py](scripts/swift_sources.py)，管道格式见 [内部接口契约](CONTRACTS.md)。
+本文覆盖 `desktop/src-tauri` 的 91 个 Rust 文件。各表列出对应的 macOS 实现和 Windows 职责。查某个符号时，还需要确认 Windows 怎样编译它。[内部接口契约](CONTRACTS.md)
+
+- `build-swift.py` 的 `CORE`、`APP`、`TESTS` 清单直接引用仓库中的文件。SwiftPM 通过目录链接访问 `Sources/` 和 `Tests/`，Windows 使用 NTFS junction。例如 `HookIntake.stdout(forAnswer:)`、`SessionSnapshot` 的状态归并和 `CodexAppServerClient.parseMessage` 都由原文件提供。[编译输入](scripts/build-swift.py)
+- `swift_sources.py` 仍会将部分函数和语句复制到构建目录的 `Selected*.swift`。其中包括 `HookServer.intake`、`AppState` 的审批和问题回包、`ConfigInstaller` 的安装规则、`RemoteInstaller` 的脚本文本，以及 `JSONLTailer` 的记录解析。下表提到这些符号时，只表示已经找到对应关系。要移除这批副本，还需要为原文件依赖的 macOS 接口或私有状态提供可用入口。[剩余生成规则](scripts/swift_sources.py)
+- OpenCode、Pi、OMP 和 OpenClaw 的插件另有 JavaScript/TypeScript 生成步骤。它会读取插件源码并生成 Windows 版本。[插件构建脚本](scripts/plugin_sources.py)
 
 ## codeisland-ipc
 
