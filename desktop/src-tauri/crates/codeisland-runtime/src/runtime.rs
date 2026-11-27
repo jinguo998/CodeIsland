@@ -1067,25 +1067,15 @@ impl Runtime {
             push_enabled: settings.push_enabled,
             session_in_front: in_front,
         };
-        let mut decision = attention::decide(&event, &outcome, subject, &context);
-        // A burst of approvals is one interruption, not one chime per card.
-        if matches!(
-            event.event_type,
-            AgentEventType::PermissionRequest | AgentEventType::Question
-        ) {
-            let kind = if event.event_type == AgentEventType::Question {
-                RequestKind::Question
-            } else {
-                RequestKind::Permission
-            };
-            let store = lock(&self.store);
-            if visible_requests(&store, kind)
-                .next()
-                .is_none_or(|head| head.event_id != event.id)
-            {
-                decision.sound = None;
+        let first = match event.event_type {
+            AgentEventType::PermissionRequest | AgentEventType::Question => {
+                let kind = if event.event_type == AgentEventType::Question { RequestKind::Question } else { RequestKind::Permission };
+                let store = lock(&self.store);
+                visible_requests(&store, kind).next().is_some_and(|head| head.event_id == event.id)
             }
-        }
+            _ => true,
+        };
+        let decision = attention::decide_for_burst(&event, &outcome, subject, &context, first);
 
         if outcome.applied {
             self.apply_island_attention(&event, &outcome, &decision);

@@ -44,6 +44,22 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
     let decoder = JSONDecoder()
     let encoder = JSONEncoder()
     switch op {
+    case "pushEndpoint":
+        let endpoint = PushEndpoint.parse(try decoder.decode(String.self, from: data))
+        return try encoder.encode(endpoint.map { [$0.url.absoluteString, $0.authorization] })
+    case "renderPush": return try renderPush(data)
+    case "acceptPush": return try acceptPush(data)
+    case "truncatePushText":
+        let args = try decoder.decode(TextLimit.self, from: data)
+        return try encoder.encode(PushMessageFormatter.truncated(args.text, limit: args.limit))
+    case "attention.intents", "attention.decide": return try attentionEvent(data, settle: op == "attention.decide")
+    case "attention.settle": return try settleAttention(data)
+    case "attention.hold": return try attentionHold(data)
+    case "toolStep":
+        return try toolStep(data)
+    case "cleanPushText":
+        let args = try decoder.decode(PushTextArguments.self, from: data)
+        return try encoder.encode(PushMessageFormatter.clean(args.text, limit: args.limit, markdown: args.markdown) ?? "")
     case "normalizeEvent":
         return try encoder.encode(EventNormalizer.normalize(decoder.decode(String.self, from: data)))
     case "claudeHostID":
@@ -216,4 +232,23 @@ private struct UsageReply: Encodable {
         today = scan.today
         hourlyOutputTokens = scan.hourlyOutputTokens
     }
+}
+
+private struct TextLimit: Decodable { let text: String; let limit: Int }
+
+private struct PushTextArguments: Decodable {
+    let text: String
+    let limit: Int
+    let markdown: Bool
+}
+
+func bridgeHook(_ data: Data) throws -> HookEvent? {
+    guard let arguments = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+    var payload = arguments["payload"] as? [String: Any] ?? [:]
+    // The Windows hook may receive its event and tool name as CLI arguments.
+    if let name = arguments["event"] as? String { payload["hook_event_name"] = name }
+    if let tool = arguments["tool"] as? String { payload["tool_name"] = tool }
+    if let id = arguments["tool_id"] as? String { payload["tool_use_id"] = id }
+    if payload["_source"] == nil { payload["_source"] = arguments["source"] }
+    return HookEvent(json: payload)
 }

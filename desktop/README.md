@@ -1,6 +1,6 @@
 # CodeIsland Desktop
 
-CodeIsland's Windows shell uses Tauri 2 and React. Cargo builds the macOS Swift sources for hook event names, follow-up reminders and Claude quota handling into a native library used by the desktop app and hook client. The Windows installers include the Swift runtime.
+CodeIsland's Windows shell uses Tauri 2 and React. The app and hook client load a native library built from the original files in `Sources/CodeIslandCore`. These files handle hook normalization, tool steps, attention decisions, reminders, Claude usage and quotas, and request formatting for the seven built-in push services. The Windows installers include the Swift runtime.
 
 ## Prerequisites
 
@@ -41,7 +41,7 @@ For a complete release (bundles + SHA-256 manifest):
 .\scripts\build-release.ps1
 ```
 
-Re-run `sync-to-windows.sh` after editing Rust files or Tauri config. The
+Re-run `sync-to-windows.sh` after changing Swift or Rust sources or Tauri configuration. The
 script excludes `node_modules`, `dist` and `target`.
 
 ### Frontend-only development (WSL or Windows)
@@ -64,11 +64,11 @@ The script runs `npm ci`, the frontend build and the Tauri build, copies the
 NSIS/MSI bundles into `desktop/artifacts/`, computes SHA256 hashes and writes
 `artifacts/release-manifest.json`.
 
-CI (`.github/workflows/desktop.yml`) runs frontend checks on Ubuntu, core Rust
-tests on Ubuntu, a full workspace test plus `tauri build --no-bundle` on
-Windows, and NSIS/MSI bundles on `v*` tags.
+CI runs the original Swift tests on macOS, Linux and Windows, and exercises the Rust callers on Linux and Windows. It extracts the Windows NSIS installer and loads the packaged Swift library with only its bundled dependencies and system DLLs available. Release tags also build an MSI.
 
 ## Tests
+
+Linux native tests require Swift and the SQLite development headers (`libsqlite3-dev` on Ubuntu).
 
 ```bash
 # Frontend typecheck + bundle

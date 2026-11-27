@@ -1,5 +1,9 @@
 import Foundation
 
+#if os(Windows)
+public typealias pid_t = Int32
+#endif
+
 /// A running Codex process that session discovery maps rollouts to.
 public enum CodexProcessRole: Equatable, Sendable {
     /// Codex Desktop's shared app-server: every Desktop thread, any cwd.
@@ -466,6 +470,13 @@ public struct HookEvent {
         }
     }
 
+    private static func toolPathLeaf(_ path: String) -> String {
+        // A local or SSH hook can report a drive or UNC path on any host.
+        let windowsPath = path.hasPrefix(#"\\"#) || path.dropFirst().hasPrefix(#":\"#)
+        let normalized = windowsPath ? path.replacingOccurrences(of: #"\"#, with: "/") : path
+        return (normalized as NSString).lastPathComponent
+    }
+
     public var toolDescription: String? {
         if isCodexEvent {
             return codexToolDescription
@@ -485,7 +496,7 @@ public struct HookEvent {
                 if let cmd { return cmd }
             case "Read", "read_file", "view_file":
                 if let fp = (input["AbsolutePath"] ?? input["file_path"]) as? String {
-                    let name = (fp as NSString).lastPathComponent
+                    let name = Self.toolPathLeaf(fp)
                     if let start = input["StartLine"] as? Int, let end = input["EndLine"] as? Int {
                         return "\(name):\(start)-\(end)"
                     }
@@ -496,11 +507,11 @@ public struct HookEvent {
                 }
             case "Edit", "apply_diff", "replace_file_content", "multi_replace_file_content":
                 if let fp = (input["TargetFile"] ?? input["file_path"]) as? String {
-                    return (fp as NSString).lastPathComponent
+                    return Self.toolPathLeaf(fp)
                 }
             case "Write", "write_to_file":
                 if let fp = (input["TargetFile"] ?? input["file_path"]) as? String {
-                    return (fp as NSString).lastPathComponent
+                    return Self.toolPathLeaf(fp)
                 }
             case "Grep", "search_files", "grep_search":
                 if let pattern = (input["Query"] ?? input["pattern"]) as? String {
@@ -524,7 +535,7 @@ public struct HookEvent {
                 return "Updating tasks"
             default:
                 // Generic: try common fields
-                if let fp = input["file_path"] as? String { return (fp as NSString).lastPathComponent }
+                if let fp = input["file_path"] as? String { return Self.toolPathLeaf(fp) }
                 if let pattern = input["pattern"] as? String { return pattern }
                 if let command = input["command"] as? String { return String(command.prefix(60)) }
                 if let prompt = input["prompt"] as? String { return String(prompt.prefix(40)) }

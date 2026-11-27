@@ -509,6 +509,47 @@ public struct SessionSnapshot: Sendable {
         }
     }
 
+    /// Apply one normalized tool event to the visible tool and its history.
+    public mutating func applyToolStep(_ event: HookEvent, eventName: String, maxHistory: Int) {
+        let isWaiting = status == .waitingApproval || status == .waitingQuestion
+        switch eventName {
+        case "PreToolUse":
+            if !isWaiting {
+                self.status = .running
+                self.currentTool = event.activityLabel
+                self.currentToolUseId = event.toolUseId
+                self.toolDescription = event.toolDescription
+            }
+        case "PostToolUse", "PostToolUseFailure":
+            let success = eventName == "PostToolUse"
+            if finishesAnotherToolUse(event) {
+                // An earlier tool's step, overtaken by the next tool's start:
+                // it is recorded from its own payload, and the running tool
+                // stays up.
+                if let tool = event.activityLabel {
+                    self.recordTool(tool, description: event.toolDescription, success: success, agentType: nil, maxHistory: maxHistory)
+                }
+                break
+            }
+            if let tool = self.currentTool {
+                self.recordTool(tool, description: toolDescription, success: success, agentType: nil, maxHistory: maxHistory)
+            }
+            if !isWaiting {
+                self.status = .processing
+                self.currentTool = nil
+                self.toolDescription = nil
+            }
+        case "PermissionDenied":
+            if !isWaiting {
+                self.status = .processing
+                self.currentTool = nil
+                self.toolDescription = nil
+            }
+        default:
+            break
+        }
+    }
+
     /// Whether a PostToolUse / PostToolUseFailure finishes a tool use other
     /// than the one running. Remote tool steps do not wait for the island,
     /// so over SSH a large PostToolUse(A) can arrive after the PreToolUse(B)
@@ -1378,39 +1419,8 @@ private func applyHookEvent(
             }
             sessions[sessionId]?.addRecentMessage(ChatMessage(isUser: true, text: prompt))
         }
-    case "PreToolUse":
-        if !isWaiting {
-            sessions[sessionId]?.status = .running
-            sessions[sessionId]?.currentTool = event.activityLabel
-            sessions[sessionId]?.currentToolUseId = event.toolUseId
-            sessions[sessionId]?.toolDescription = event.toolDescription
-        }
-    case "PostToolUse", "PostToolUseFailure":
-        let success = eventName == "PostToolUse"
-        if sessions[sessionId]?.finishesAnotherToolUse(event) == true {
-            // An earlier tool's step, overtaken by the next tool's start:
-            // it is recorded from its own payload, and the running tool
-            // stays up.
-            if let tool = event.activityLabel {
-                sessions[sessionId]?.recordTool(tool, description: event.toolDescription, success: success, agentType: nil, maxHistory: maxHistory)
-            }
-            break
-        }
-        if let tool = sessions[sessionId]?.currentTool {
-            let desc = sessions[sessionId]?.toolDescription
-            sessions[sessionId]?.recordTool(tool, description: desc, success: success, agentType: nil, maxHistory: maxHistory)
-        }
-        if !isWaiting {
-            sessions[sessionId]?.status = .processing
-            sessions[sessionId]?.currentTool = nil
-            sessions[sessionId]?.toolDescription = nil
-        }
-    case "PermissionDenied":
-        if !isWaiting {
-            sessions[sessionId]?.status = .processing
-            sessions[sessionId]?.currentTool = nil
-            sessions[sessionId]?.toolDescription = nil
-        }
+    case "PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionDenied":
+        sessions[sessionId]?.applyToolStep(event, eventName: eventName, maxHistory: maxHistory)
     case "SubagentStart":
         if !isWaiting {
             sessions[sessionId]?.status = .running

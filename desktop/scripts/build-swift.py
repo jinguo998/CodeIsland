@@ -11,10 +11,20 @@ ROOT = Path(__file__).resolve().parents[2]
 BRIDGE = ROOT / "desktop/swift"
 CORE = (
     "ClaudeConfigPaths", "ConfigPathIdentity", "ExtraConfigDirs", "ClaudeDesktopCodeSession", "ClaudeQuota", "ClaudeQuotaClient", "ClaudeQuotaScheduler", "ClaudeUsageScanner", "ModelLabel",
+    "AgentTaskList", "AgentTaskParsing", "AttentionPolicy", "BackgroundCompactionFilter",
+    "CodexThreadSubsession", "CursorHookPayload", "CursorSessionFolding", "DeclaredSubsession",
+    "EventSoundRouting", "SceneMuteState", "HermesHookPayload", "HermesSessionStore", "HostHarness", "JSONLTailer",
+    "Models",
+    "PushChannel", "PushNotification", "PushPolicy", "SessionRecap", "SessionSnapshot",
+    "SubsessionLink", "SubsessionRouter", "WarpPaneResolver",
     "EventNormalizer", "FollowUpReminderScheduler", "RemoteReconnectPolicy",
 )
 TESTS = ("ClaudeQuotaTests", "ClaudeQuotaSchedulerTests", "FollowUpReminderSchedulerTests",
-         "RemoteReconnectPolicyTests", "ClaudeUsageScannerTests", "ModelLabelTests")
+         "RemoteReconnectPolicyTests", "ClaudeUsageScannerTests", "ModelLabelTests",
+         "AgentTaskListTests", "AttentionPolicyTests", "DerivedSessionStateTests",
+         "HookEventFactsTests", "HookEventToolUseIdTests", "OutOfOrderToolStepTests",
+         "PushChannelPayloadTests", "PushRedactionTests", "PushPolicyTests", "ReplyCompletePlaceholderTests",
+         "SessionRecapTests", "SubsessionReducerTests", "SubsessionRouterTests", "SubsessionTestSupport")
 
 
 def stage(sources, destination):
@@ -31,16 +41,22 @@ def stage(sources, destination):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("build", "test"))
-    parser.add_argument("--scratch", type=Path, required=True)
+    parser.add_argument("action", choices=("build", "test", "macos-test"))
+    parser.add_argument("--scratch", type=Path)
     parser.add_argument("--configuration", choices=("debug", "release"), default="debug")
     args = parser.parse_args()
+    if args.action == "macos-test":
+        subprocess.run(["swift", "test", "--package-path", str(ROOT), "--filter", "|".join(TESTS)], check=True)
+        return
+    if args.scratch is None:
+        parser.error("--scratch is required for a desktop build")
     package = args.scratch.resolve() / "package"
     # SwiftPM requires every target to be inside its package. The staging area
     # works across volumes on Windows without symlink privileges. It never
     # writes the macOS package or its dependency lockfile.
-    stage([BRIDGE / "Package.swift"], package)
+    stage([BRIDGE / "Package.swift", BRIDGE / "Package.resolved"], package)
     stage([ROOT / "Sources/CodeIslandCore" / f"{name}.swift" for name in CORE], package / "Sources/CodeIslandCore")
+    stage(sorted((BRIDGE / "DesktopSQLite").glob("*")), package / "Sources/DesktopSQLite")
     stage(sorted((BRIDGE / "Sources").glob("*.swift")), package / "Sources/CodeIslandDesktopCore")
     stage([ROOT / "Tests/CodeIslandCoreTests" / f"{name}.swift" for name in TESTS], package / "Tests/CodeIslandCoreTests")
     base = ["swift", args.action, "--package-path", str(package), "-c", args.configuration]

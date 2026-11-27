@@ -731,19 +731,7 @@ impl SessionStore {
                 snapshot.tool_use_id = None;
             }
             AgentEventType::ToolStart => {
-                // A cancelled turn stays cancelled until a prompt or session
-                // start revives it; late tool hooks are noise.
-                if snapshot.status != SessionStatus::Cancelled && !snapshot.status.needs_you() {
-                    snapshot.status = SessionStatus::Running;
-                    snapshot.active_tool = event.tool.clone();
-                    snapshot.active_tool_detail = if event.agent == AgentKind::Claude {
-                        crate::hook_tool::description(event)
-                    } else {
-                        None
-                    };
-                    snapshot.is_executing_tool = true;
-                    snapshot.tool_use_id = tool_use_id.clone();
-                }
+                crate::hook_tool::apply(snapshot, event, tool_use_id.as_deref());
                 // A permission gate often arrives after the tool started with
                 // less detail; remember what we saw so the approval card can
                 // still name the tool and show its command.
@@ -755,17 +743,7 @@ impl SessionStore {
                 }
             }
             AgentEventType::ToolEnd => {
-                let finishes_another_claude_tool = event.agent == AgentKind::Claude
-                    && snapshot.active_tool.is_some()
-                    && snapshot.tool_use_id.as_ref().zip(tool_use_id.as_ref())
-                        .is_some_and(|(active, finished)| active != finished);
-                if snapshot.status != SessionStatus::Cancelled && !snapshot.status.needs_you()
-                    && !finishes_another_claude_tool
-                {
-                    snapshot.active_tool = None;
-                    snapshot.is_executing_tool = false;
-                    snapshot.tool_use_id = None;
-                }
+                crate::hook_tool::apply(snapshot, event, tool_use_id.as_deref());
                 if let Some(id) = tool_use_id.as_deref() {
                     self.tool_uses
                         .remove(&tool_use_key(&event.session_id, id));

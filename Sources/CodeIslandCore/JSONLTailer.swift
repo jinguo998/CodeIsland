@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#endif
 
 public enum ConversationTurnStatus: Equatable, Sendable {
     case processing
@@ -108,6 +110,7 @@ public struct ConversationTailDelta: Equatable, Sendable {
 public final class JSONLTailer: @unchecked Sendable {
     public typealias DeltaHandler = @Sendable (ConversationTailDelta) -> Void
 
+    #if canImport(Darwin)
     private final class Watch {
         let sessionId: String
         var filePath: String
@@ -405,6 +408,8 @@ public final class JSONLTailer: @unchecked Sendable {
         }
         return data
     }
+
+    #endif
 
     // MARK: - Pure parsing (exposed for tests)
 

@@ -418,7 +418,7 @@ async fn exchange(
     };
     let code = status.as_u16();
     if status.is_success() {
-        let result = crate::push_channels::accepted(channel, &body).then_some(())
+        let result = crate::push_channels::accepted(channel, code, &body).then_some(())
             .ok_or(PushError::ServiceRejected);
         return (result, None);
     }

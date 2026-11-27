@@ -108,7 +108,7 @@ pub struct AttentionSubject {
     pub interrupted: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AttentionContext {
     pub sounds_enabled: bool,
     pub audible_cues: HashSet<String>,
@@ -137,7 +137,7 @@ impl Default for AttentionContext {
 
 impl AttentionContext {
     pub fn holds_sounds(&self) -> bool {
-        self.quiet_hours || (self.mute_when_away && self.away)
+        codeisland_swift::call(c"attention.hold", self)
     }
 }
 
@@ -149,171 +149,70 @@ pub fn first_of_burst(pending: &IndexMap<String, PendingRequest>, kind: RequestK
         .any(|request| !request.hidden && request.kind == kind)
 }
 
-pub fn sound_cue(event: &AgentEvent) -> Option<String> {
-    // A turn the user stopped makes no noise.
-    if event.is_interrupted_turn() {
-        return None;
-    }
-    match event.event_type {
-        AgentEventType::SessionStart | AgentEventType::SubagentStart => {
-            Some(CUE_SESSION_START.to_owned())
-        }
-        AgentEventType::UserPrompt => Some(CUE_PROMPT.to_owned()),
-        AgentEventType::PermissionRequest | AgentEventType::Question => {
-            Some(CUE_REQUEST.to_owned())
-        }
-        AgentEventType::TurnEnd | AgentEventType::SubagentEnd => {
-            Some(CUE_TURN_END.to_owned())
-        }
-        AgentEventType::TurnFailed | AgentEventType::Error => {
-            Some(CUE_TURN_FAILED.to_owned())
-        }
-        AgentEventType::Interrupt | AgentEventType::SessionEnd => None,
-        _ => None,
-    }
-}
-
-/// What the moment calls for on its own, before settings and the room.
-pub fn intents_for_event(
+fn event_arguments(
     event: &AgentEvent,
     outcome: &ApplyOutcome,
     subject: AttentionSubject,
-) -> AttentionIntents {
-    let mut intents = AttentionIntents::default();
-
-    // A CLI exiting is not a moment: the store has already removed its card
-    // and queued requests, so nothing should ring, pop or push.
-    if event.event_type == AgentEventType::SessionEnd {
-        return intents;
-    }
-
-    // Subagent events without a parent are heartbeats; they never mint a card.
-    if matches!(
-        event.event_type,
-        AgentEventType::SubagentStart | AgentEventType::SubagentEnd
-    ) && event.parent_session_id.is_none()
-    {
-        return intents;
-    }
-
-    // A turn the user stopped is not news: no sound, push, completion or reminder.
-    if event.is_interrupted_turn() {
-        return intents;
-    }
-
-    // A declared child never alerts; its parent card carries the news.
-    if subject.is_child {
-        return intents;
-    }
-
-    match event.event_type {
-        AgentEventType::PermissionRequest => {
-            intents.sound = Some(CUE_REQUEST.to_owned());
-            intents.push = Some(PushIntent {
-                kind: PushKind::Approval,
-                smart_suppressible: false,
-            });
-            return intents;
-        }
-        AgentEventType::Question => {
-            intents.sound = Some(CUE_REQUEST.to_owned());
-            intents.push = Some(PushIntent {
-                kind: PushKind::Question,
-                smart_suppressible: true,
-            });
-            return intents;
-        }
-        _ => {}
-    }
-
-    if outcome.applied {
-        intents.sound = sound_cue(event);
-    }
-
-    match event.event_type {
-        AgentEventType::TurnEnd | AgentEventType::SubagentEnd => {
-            intents.completion = Some(CompletionIntent { turn_failed: false });
-            intents.push = Some(PushIntent {
-                kind: PushKind::Completion,
-                smart_suppressible: true,
-            });
-            if !subject.interrupted {
-                intents.follow_up = Some(FollowUpIntent::TrackCompletion { turn_failed: false });
-            }
-        }
-        AgentEventType::TurnFailed | AgentEventType::Error => {
-            intents.completion = Some(CompletionIntent { turn_failed: true });
-            intents.push = Some(PushIntent {
-                kind: PushKind::Error,
-                smart_suppressible: true,
-            });
-            if !subject.interrupted {
-                intents.follow_up = Some(FollowUpIntent::TrackCompletion { turn_failed: true });
-            }
-        }
-        AgentEventType::Interrupt => {
-            // The card pops, but a turn the user stopped is not news: no sound, push or reminder.
-            intents.sound = None;
-            intents.completion = Some(CompletionIntent { turn_failed: false });
-        }
-        _ => {}
-    }
-    intents
-}
-
-/// What actually happens, given the user's settings and the room.
-pub fn settle(intents: AttentionIntents, context: &AttentionContext) -> AttentionDecision {
-    let mut decision = AttentionDecision::default();
-
-    if let Some(cue) = intents.sound {
-        if context.sounds_enabled
-            && context.audible_cues.contains(&cue)
-            && !context.holds_sounds()
-        {
-            decision.sound = Some(cue);
-        }
-    }
-
-    if let Some(completion) = intents.completion {
-        let presentation = match context.completion_style {
-            CompletionStyle::Off => CompletionPresentation::StatusOnly,
-            CompletionStyle::Glance => CompletionPresentation::Glance,
-            CompletionStyle::Expand => CompletionPresentation::Card,
-        };
-        decision.completion = Some(CompletionDecision {
-            turn_failed: completion.turn_failed,
-            presentation,
-        });
-    }
-
-    if let Some(push) = intents.push {
-        if context.push_enabled {
-            decision.push = Some(PushDecision {
-                kind: push.kind,
-                smart_suppressed: push.smart_suppressible && context.session_in_front,
-            });
-        }
-    }
-
-    decision.follow_up = match intents.follow_up {
-        Some(FollowUpIntent::TrackCompletion { .. })
-            if context.completion_style == CompletionStyle::Off =>
-        {
-            None
-        }
-        other => other,
+    first: bool,
+) -> serde_json::Value {
+    use AgentEventType::*;
+    let kind = event.event_type;
+    let raw = event.raw_event_name.as_deref();
+    let moment = match kind {
+        SessionEnd => "silent",
+        SubagentStart | SubagentEnd if event.parent_session_id.is_none() => "silent",
+        _ if !outcome.applied => "silent",
+        _ if event.is_interrupted_turn() => "stopped",
+        PermissionRequest => "approval",
+        Question if raw == Some("CodexAppServerQuestion") => "appServerQuestion",
+        Question => "question",
+        Interrupt => "interrupted",
+        TurnEnd if raw.is_none() => "finished",
+        TurnFailed | Error if raw.is_none() => "failed",
+        _ => "hook",
     };
-
-    decision
+    // Events synthesized by the Windows watchers have no wire name.
+    let name = raw.unwrap_or(match kind {
+        SessionStart => "SessionStart",
+        SubagentStart => "SubagentStart",
+        SubagentEnd => "SubagentStop",
+        UserPrompt => "UserPromptSubmit",
+        ToolStart => "PreToolUse",
+        ToolEnd => "PostToolUse",
+        TurnEnd => "Stop",
+        TurnFailed | Error => "StopFailure",
+        Notification => "Notification",
+        _ => "",
+    });
+    serde_json::json!({
+        "moment": moment, "event": name, "source": event.agent, "payload": event.payload,
+        "first": first, "applied": outcome.applied, "ended": outcome.ended_turn,
+        "child": subject.is_child, "interrupted": subject.interrupted, "agent_id": event.agent_id,
+    })
 }
 
-pub fn decide(
-    event: &AgentEvent,
-    outcome: &ApplyOutcome,
-    subject: AttentionSubject,
-    context: &AttentionContext,
-) -> AttentionDecision {
-    settle(intents_for_event(event, outcome, subject), context)
+pub fn sound_cue(event: &AgentEvent) -> Option<String> {
+    let outcome = ApplyOutcome { applied: true, session_id: event.session_id.clone(),
+        is_new_session: false, ended_turn: false, turn_failed: false, request: None };
+    intents_for_event(event, &outcome, AttentionSubject::default()).sound
+}
+
+pub fn intents_for_event(event: &AgentEvent, outcome: &ApplyOutcome, subject: AttentionSubject) -> AttentionIntents {
+    codeisland_swift::call(c"attention.intents", event_arguments(event, outcome, subject, true))
+}
+
+pub fn settle(intents: AttentionIntents, context: &AttentionContext) -> AttentionDecision {
+    codeisland_swift::call(c"attention.settle", serde_json::json!({"intents": intents, "context": context}))
+}
+
+pub fn decide(event: &AgentEvent, outcome: &ApplyOutcome, subject: AttentionSubject, context: &AttentionContext) -> AttentionDecision {
+    decide_for_burst(event, outcome, subject, context, true)
+}
+
+pub fn decide_for_burst(event: &AgentEvent, outcome: &ApplyOutcome, subject: AttentionSubject, context: &AttentionContext, first: bool) -> AttentionDecision {
+    let mut args = event_arguments(event, outcome, subject, first);
+    args["context"] = serde_json::json!(context);
+    codeisland_swift::call(c"attention.decide", args)
 }
 
 /// Parses "HH:MM" and reports whether `now` falls inside a quiet-hours window.
