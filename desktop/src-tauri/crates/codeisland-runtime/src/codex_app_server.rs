@@ -1,7 +1,7 @@
 //! Codex Desktop's JSON-RPC client. Only requests originating on this
 //! connection can be answered or withdrawn by it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -38,6 +38,18 @@ impl RequestId {
     }
 }
 
+#[derive(Deserialize)]
+struct RpcMessage {
+    method: Option<String>,
+    id: Option<RequestId>,
+    params: Value,
+    has_result: bool,
+}
+
+fn parse_message(line: &str) -> Option<RpcMessage> {
+    codeisland_swift::call_bytes(c"codex.rpc", line.as_bytes())
+}
+
 struct Question {
     session_id: String,
     event_id: String,
@@ -59,10 +71,10 @@ impl Connection {
         self.stdin.flush().await
     }
 
-    async fn receive(&mut self, envelope: Value) -> io::Result<()> {
-        let Some(method) = envelope.get("method").and_then(Value::as_str) else { return Ok(()) };
-        let params = &envelope["params"];
-        match (method, RequestId::from_value(envelope.get("id"))) {
+    async fn receive(&mut self, envelope: RpcMessage) -> io::Result<()> {
+        let Some(method) = envelope.method.as_deref() else { return Ok(()) };
+        let params = &envelope.params;
+        match (method, envelope.id) {
             ("item/tool/requestUserInput", Some(id)) => {
                 if self.pending.contains_key(&id) {
                     return Ok(());
@@ -191,9 +203,9 @@ async fn run_client(
     })).await?;
     let initialized = tokio::time::timeout(Duration::from_secs(10), async {
         while let Some(line) = lines.next_line().await? {
-            let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
-            if message["id"] == INITIALIZE_ID && message.get("method").is_none() {
-                return Ok::<bool, io::Error>(message.get("result").is_some());
+            let Some(message) = parse_message(&line) else { continue };
+            if message.id == Some(RequestId::Number(INITIALIZE_ID)) && message.method.is_none() {
+                return Ok::<bool, io::Error>(message.has_result);
             }
         }
         Ok(false)
@@ -208,7 +220,7 @@ async fn run_client(
         tokio::select! {
             line = lines.next_line() => {
                 let Some(line) = line? else { break };
-                if let Ok(message) = serde_json::from_str::<Value>(&line) {
+                if let Some(message) = parse_message(&line) {
                     connection.receive(message).await?;
                 }
             }
@@ -238,45 +250,13 @@ fn owned_string(value: &Value) -> Option<String> {
 }
 
 fn thread_status(status: &Value) -> Option<SessionStatus> {
-    match status["type"].as_str()? {
-        "active" => {
-            let flags = status["activeFlags"].as_array();
-            let includes = |flag: &str| flags.is_some_and(|flags| flags.iter().any(|item| item == flag));
-            if includes("waitingOnApproval") {
-                Some(SessionStatus::WaitingPermission)
-            } else if includes("waitingOnUserInput") {
-                Some(SessionStatus::WaitingAnswer)
-            } else {
-                Some(SessionStatus::Running)
-            }
-        }
-        "idle" | "systemError" | "notLoaded" => Some(SessionStatus::Idle),
-        _ => None,
-    }
+    codeisland_swift::call(c"codex.threadStatus", status)
 }
 
 fn question_event(params: &Value) -> Option<(AgentEvent, Vec<String>)> {
-    let mut keys = Vec::new();
-    let mut used_keys = HashSet::new();
-    let questions: Vec<_> = params["questions"].as_array()?.iter().filter_map(|question| {
-        let mut question = question.as_object()?.clone();
-        let text = question.get("question").and_then(Value::as_str)
-            .filter(|text| !text.is_empty()).unwrap_or("Question").to_owned();
-        let base = question.get("id").and_then(Value::as_str)
-            .filter(|id| !id.is_empty()).unwrap_or(&text);
-        let mut key = base.to_owned();
-        for suffix in 2.. {
-            if used_keys.insert(key.clone()) {
-                break;
-            }
-            key = format!("{base}_{suffix}");
-        }
-        question.insert("question".into(), Value::String(text));
-        question.insert("answer_key".into(), Value::String(key.clone()));
-        keys.push(key);
-        Some(question)
-    }).collect();
+    let questions: Vec<Value> = codeisland_swift::call(c"codex.questions", params);
     let first = questions.first()?;
+    let keys = questions.iter().filter_map(|row| owned_string(&row["answer_key"])).collect();
     let mut event = thread_event(params["threadId"].as_str()?, AgentEventType::Question);
     event.raw_event_name = Some("CodexAppServerQuestion".into());
     event.agent_id = Some("codex-app-server".into());
@@ -287,7 +267,7 @@ fn question_event(params: &Value) -> Option<(AgentEvent, Vec<String>)> {
 }
 
 fn answer_result(keys: &[String], decision: Option<&Decision>) -> Value {
-    let mut answers = Map::new();
+    let mut answers = HashMap::new();
     if let Some(text) = decision.filter(|decision| decision.action == UserAction::Answer)
         .and_then(|decision| decision.text.as_deref())
     {
@@ -299,11 +279,11 @@ fn answer_result(keys: &[String], decision: Option<&Decision>) -> Value {
                 None => None,
             };
             if let Some(choice) = choice.filter(|text| !text.is_empty()) {
-                answers.insert(key.clone(), json!({ "answers": [choice] }));
+                answers.insert(key, [choice.to_owned()]);
             }
         }
     }
-    json!({ "answers": answers })
+    codeisland_swift::call(c"codex.questionResult", answers)
 }
 
 #[cfg(windows)]
@@ -362,7 +342,7 @@ mod tests {
         printf '%s\n' '{"method":"thread/started","params":{"thread":{"id":"native","cwd":"C:/work","preview":"Initial prompt","name":"Native thread","path":"C:/native.jsonl","status":{"type":"active"}}}}'
         printf '%s\n' '{"method":"item/tool/requestUserInput","id":"wizard","params":{"threadId":"native","questions":[{"id":"env","header":"Mode","question":"Where?","options":[{"label":"staging","description":"Preview before launch"}]},{"id":"token","header":"Mode","question":"Secret?","isSecret":true}]}}'
         IFS= read -r reply || exit 5
-        case "$reply" in *'"id":"wizard"'*'"env":{"answers":["staging"]}'*'"token":{"answers":["test-only"]}'*) ;; *) exit 6 ;; esac
+        printf '%s\n' "$reply" > "$1" || exit 6
 
         printf '%s\n' '{"method":"thread/closed","params":{"threadId":"native"}}'
         printf '%s\n' '{"method":"thread/started","params":{"thread":{"id":"keep","status":{"type":"active","activeFlags":["waitingOnApproval"]}}}}'
@@ -397,8 +377,10 @@ mod tests {
 
         let active = Arc::new(AtomicBool::new(true));
         let probe = Arc::clone(&active);
+        let fixture = tempfile::tempdir().unwrap();
+        let reply_path = fixture.path().join("reply.json");
         let mut command = Command::new("sh");
-        command.args(["-c", FIXTURE]);
+        command.args(["-c", FIXTURE, "codex-fixture"]).arg(&reply_path);
         let child = tokio::spawn(run_client(Arc::clone(&runtime), command, move || {
             probe.load(Ordering::Relaxed)
         }));
@@ -430,6 +412,11 @@ mod tests {
                 && !state.store.sessions.iter().any(|session| session.session_id == "codexapp:native"))
                 .then_some(())
         }).await;
+        let reply: Value = serde_json::from_slice(&std::fs::read(reply_path).unwrap()).unwrap();
+        assert_eq!(reply, json!({
+            "jsonrpc": "2.0", "id": "wizard",
+            "result": { "answers": { "env": { "answers": ["staging"] }, "token": { "answers": ["test-only"] } } }
+        }));
         assert!(!runtime.can_tail_codex_desktop("codexapp:native"));
 
         active.store(false, Ordering::Relaxed);

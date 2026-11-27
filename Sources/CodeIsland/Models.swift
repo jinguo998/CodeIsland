@@ -34,11 +34,7 @@ struct PermissionRequest {
     var toolUseId: String? { event.toolUseId }
 }
 
-struct AskUserQuestionItem {
-    let payload: QuestionPayload
-    let answerKey: String
-    let multiSelect: Bool
-}
+typealias AskUserQuestionItem = CodeIslandCore.AskUserQuestionItem
 
 struct AskUserQuestionAnswer: Equatable {
     let question: String

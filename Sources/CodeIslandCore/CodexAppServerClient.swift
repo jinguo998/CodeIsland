@@ -1,94 +1,5 @@
 import Foundation
 
-/// A parsed JSON-RPC envelope received from the Codex app-server.
-///
-/// The Codex transport is newline-delimited JSON; the fields below match
-/// JSON-RPC 2.0 with a tolerant reading of responses (the server omits the
-/// `jsonrpc` marker on successful replies, which is fine for clients).
-public struct CodexJSONRPCMessage: Equatable {
-    public enum Kind: Equatable {
-        case request(method: String, id: CodexRequestID)
-        case notification(method: String)
-        case response(id: CodexRequestID)
-        case error(id: CodexRequestID?, code: Int, message: String)
-    }
-
-    public let raw: [String: AnyCodableLike]
-    public let kind: Kind
-
-    public init(raw: [String: AnyCodableLike], kind: Kind) {
-        self.raw = raw
-        self.kind = kind
-    }
-}
-
-/// Matches JSON-RPC's union type for request/response ids: int or string.
-public enum CodexRequestID: Hashable {
-    case int(Int64)
-    case string(String)
-
-    public static func decode(_ value: Any?) -> CodexRequestID? {
-        if let n = value as? Int { return .int(Int64(n)) }
-        if let n = value as? Int64 { return .int(n) }
-        if let n = value as? NSNumber { return .int(n.int64Value) }
-        if let s = value as? String { return .string(s) }
-        return nil
-    }
-
-    public var jsonValue: Any {
-        switch self {
-        case .int(let n): return NSNumber(value: n)
-        case .string(let s): return s
-        }
-    }
-}
-
-/// Lightweight, untyped wrapper around `Any` so message records round-trip
-/// through `Equatable` without forcing the full schema to be modeled here.
-public enum AnyCodableLike: Equatable {
-    case null
-    case bool(Bool)
-    case int(Int64)
-    case double(Double)
-    case string(String)
-    case array([AnyCodableLike])
-    case object([String: AnyCodableLike])
-
-    public static func from(_ value: Any?) -> AnyCodableLike {
-        switch value {
-        case nil: return .null
-        case let v as NSNull: _ = v; return .null
-        case let v as Bool: return .bool(v)
-        case let v as Int: return .int(Int64(v))
-        case let v as Int64: return .int(v)
-        case let v as NSNumber:
-            if CFNumberIsFloatType(v) { return .double(v.doubleValue) }
-            return .int(v.int64Value)
-        case let v as Double: return .double(v)
-        case let v as String: return .string(v)
-        case let v as [Any]: return .array(v.map(AnyCodableLike.from))
-        case let v as [String: Any]:
-            var out: [String: AnyCodableLike] = [:]
-            for (k, val) in v { out[k] = AnyCodableLike.from(val) }
-            return .object(out)
-        default: return .null
-        }
-    }
-
-    public var asObject: [String: AnyCodableLike]? {
-        if case .object(let o) = self { return o }
-        return nil
-    }
-    public var asString: String? {
-        if case .string(let s) = self { return s }
-        return nil
-    }
-    public var asBool: Bool? {
-        if case .bool(let b) = self { return b }
-        return nil
-    }
-}
-
 /// Client lifecycle / connection errors surfaced to callers.
 public enum CodexAppServerError: Error, Equatable {
     case executableMissing(String)
@@ -329,63 +240,11 @@ public final class CodexAppServerClient: @unchecked Sendable {
 
     // MARK: - Pure parser (exposed for tests)
 
-    /// Consume as many complete newline-delimited JSON messages as possible
-    /// from the buffer. Trailing partial bytes remain in the buffer untouched.
     public static func drainMessages(buffer: inout Data) -> [CodexJSONRPCMessage] {
-        var results: [CodexJSONRPCMessage] = []
-        let newline: UInt8 = 0x0A
-        var searchStart = buffer.startIndex
-
-        while searchStart < buffer.endIndex {
-            guard let newlineIndex = buffer[searchStart..<buffer.endIndex].firstIndex(of: newline) else {
-                break
-            }
-            let lineBytes = buffer[searchStart..<newlineIndex]
-            if !lineBytes.isEmpty, let parsed = parseMessage(Data(lineBytes)) {
-                results.append(parsed)
-            }
-            searchStart = buffer.index(after: newlineIndex)
-        }
-
-        if searchStart == buffer.startIndex { return results }
-        if searchStart >= buffer.endIndex {
-            buffer.removeAll(keepingCapacity: true)
-        } else {
-            buffer = Data(buffer[searchStart..<buffer.endIndex])
-        }
-        return results
+        CodexAppServerProtocol.drainMessages(buffer: &buffer)
     }
 
-    /// Turn a single JSON object string into a `CodexJSONRPCMessage`, or return
-    /// nil when the payload is not a recognizable envelope.
     public static func parseMessage(_ data: Data) -> CodexJSONRPCMessage? {
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
-        let raw = AnyCodableLike.from(obj).asObject ?? [:]
-
-        if let errorPayload = obj["error"] as? [String: Any] {
-            let code = (errorPayload["code"] as? Int)
-                ?? (errorPayload["code"] as? NSNumber).map(\.intValue)
-                ?? 0
-            let message = (errorPayload["message"] as? String) ?? ""
-            return CodexJSONRPCMessage(
-                raw: raw,
-                kind: .error(id: CodexRequestID.decode(obj["id"]), code: code, message: message)
-            )
-        }
-
-        if let method = obj["method"] as? String {
-            if let id = CodexRequestID.decode(obj["id"]) {
-                return CodexJSONRPCMessage(raw: raw, kind: .request(method: method, id: id))
-            } else {
-                return CodexJSONRPCMessage(raw: raw, kind: .notification(method: method))
-            }
-        }
-
-        if let id = CodexRequestID.decode(obj["id"]) {
-            return CodexJSONRPCMessage(raw: raw, kind: .response(id: id))
-        }
-        return nil
+        CodexAppServerProtocol.parseMessage(data)
     }
 }

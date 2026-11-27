@@ -8,6 +8,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use codeisland_domain::AgentEvent;
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,37 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "ssh")]
 #[path = "ssh_config.rs"]
 mod config;
+
+/// The original Swift policy owns the host's reconnect state. The Windows
+/// worker enacts each step with its SSH transport and Tokio timers.
+#[derive(Default)]
+pub struct ReconnectPolicy(codeisland_swift::Context);
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(tag = "step", rename_all = "lowercase")]
+pub enum ReconnectStep {
+    Connect,
+    Retry { seconds: f64 },
+    Offline { seconds: f64 },
+    None,
+}
+
+impl ReconnectPolicy {
+    pub fn start(&self, id: &str) -> ReconnectStep { self.0.call(c"ssh.start", id) }
+    pub fn connected(&self, id: &str) { self.0.call(c"ssh.connected", id) }
+    pub fn stop(&self, id: &str) { self.0.call(c"ssh.stop", id) }
+    pub fn failed(&self, id: &str, auto: bool) -> ReconnectStep {
+        self.0.call(c"ssh.failed", serde_json::json!({"id":id, "auto":auto}))
+    }
+    pub fn due(&self, id: &str) -> ReconnectStep { self.0.call(c"ssh.due", id) }
+    pub fn recover(&self, id: &str) -> ReconnectStep { self.0.call(c"ssh.recover", id) }
+    pub fn wake(&self) -> Duration {
+        Duration::from_secs_f64(self.0.call(c"ssh.wake", ()))
+    }
+    pub fn network(&self, online: Option<bool>) -> Option<Duration> {
+        self.0.call::<Option<f64>>(c"ssh.network", online).map(Duration::from_secs_f64)
+    }
+}
 
 /// A user-configured remote host. Unset SSH options come from OpenSSH.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

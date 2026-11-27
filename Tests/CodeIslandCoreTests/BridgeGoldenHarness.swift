@@ -1,3 +1,4 @@
+import CoreFoundation
 import Foundation
 import XCTest
 
@@ -178,6 +179,7 @@ struct BridgeGoldenNormalizer {
     }
 }
 
+#if canImport(Darwin)
 /// Runs codeisland-bridge on a fixture for real: under a process chain of
 /// stub executables at the fixture's paths (with the argv it names), against
 /// a stand-in island socket, with stdin from a file.
@@ -452,3 +454,4 @@ final class GoldenUnixServer {
         unlink(path)
     }
 }
+#endif

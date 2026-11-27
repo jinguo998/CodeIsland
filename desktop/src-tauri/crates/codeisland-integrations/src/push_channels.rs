@@ -13,6 +13,15 @@ fn native_name(channel: PushChannel) -> &'static str {
     }
 }
 
+pub(crate) fn event_name(kind: PushKind) -> &'static str {
+    match kind {
+        PushKind::Approval => "permission",
+        PushKind::Question | PushKind::DisplayOnlyWait => "question",
+        PushKind::Completion => "completion",
+        PushKind::Error => "error",
+    }
+}
+
 #[derive(Deserialize)]
 struct RenderedRequest {
     url: String,
@@ -51,12 +60,7 @@ pub(crate) fn build(
     }
     let mut native_config = serde_json::to_value(config).expect("encode push settings");
     native_config["kind"] = json!(native_name(channel));
-    let event = match kind {
-        PushKind::Approval => "permission",
-        PushKind::Question | PushKind::DisplayOnlyWait => "question",
-        PushKind::Completion => "completion",
-        PushKind::Error => "error",
-    };
+    let event = event_name(kind);
     let result: RequestResult = codeisland_swift::call(c"renderPush", json!({
         "config": native_config, "kind": event, "title": title, "headline": headline,
         "body": details.trim(), "now": now.timestamp_millis() as f64 / 1000.0,

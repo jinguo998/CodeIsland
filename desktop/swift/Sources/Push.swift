@@ -48,3 +48,19 @@ func acceptPush(_ data: Data) throws -> Data {
     let result = PushResponseInterpreter.interpret(kind: args.channel, statusCode: args.status, body: Data(args.body.utf8))
     return try JSONEncoder().encode(result.ok)
 }
+
+func pushTransportPolicy(_ operation: String, _ data: Data) throws -> Data {
+    let decoder = JSONDecoder()
+    let encoder = JSONEncoder()
+    if operation == "push.redirect" {
+        struct Redirect: Decodable { let from: URL; let to: URL; let count: Int }
+        let args = try decoder.decode(Redirect.self, from: data)
+        return try encoder.encode(PushRedirectPolicy.refusal(from: args.from, to: args.to, redirectCount: args.count) == nil)
+    }
+    struct Failure: Decodable { let kind: PushEventKind; let status: Int?; let after: String?; let body: String }
+    let args = try decoder.decode(Failure.self, from: data)
+    let response = PushTransportResponse(statusCode: args.status, body: Data(args.body.utf8),
+                                        retryAfter: URLSessionPushTransport.retryAfter(args.after))
+    let delay = PushRetryPolicy.retries(args.kind) ? PushRetryPolicy.delay(after: response) : nil
+    return try encoder.encode(delay)
+}

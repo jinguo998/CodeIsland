@@ -11,19 +11,21 @@ ROOT = Path(__file__).resolve().parents[2]
 BRIDGE = ROOT / "desktop/swift"
 CORE = (
     "ClaudeConfigPaths", "ConfigPathIdentity", "ExtraConfigDirs", "ClaudeDesktopCodeSession", "ClaudeQuota", "ClaudeQuotaClient", "ClaudeQuotaScheduler", "ClaudeUsageScanner", "ModelLabel",
-    "AgentTaskList", "AgentTaskParsing", "AttentionPolicy", "BackgroundCompactionFilter",
-    "CoworkSession", "CoworkAuditLog", "CodexThreadSubsession", "CursorHookPayload", "CursorSessionFolding", "DeclaredSubsession",
+    "GitBranchReader", "ESP32Protocol", "AppleCompanionPayload", "AppleCompanionBluetooth", "AgentTaskList", "AgentTaskParsing", "AttentionPolicy", "BackgroundCompactionFilter",
+    "CoworkSession", "CoworkAuditLog", "CodexAppServerProtocol", "CodexHooksConfig", "CodexPermissionRules", "CodexThreadSubsession", "CursorHookPayload", "CursorSessionFolding", "DeclaredSubsession",
     "EventSoundRouting", "SceneMuteState", "HermesHookPayload", "HermesSessionStore", "HostHarness", "JSONLTailer",
     "Models",
-    "PushChannel", "PushNotification", "PushPolicy", "IdleSessionRemoval", "SessionListOrdering", "SessionRecap", "SessionSnapshot",
+    "PushTransport", "PushChannel", "PushNotification", "PushPolicy", "IdleSessionRemoval", "SessionListOrdering", "SessionRecap", "SessionSnapshot",
     "SubsessionLink", "SubsessionRouter", "WarpPaneResolver",
+    "HookIntake", "HookEdgeFacts", "AntigravityHookContract", "GrokHookForwardingPolicy", "GrokSessionPaths",
     "EventNormalizer", "FollowUpReminderScheduler", "RemoteReconnectPolicy",
 )
-TESTS = ("ClaudeQuotaTests", "ClaudeQuotaSchedulerTests", "FollowUpReminderSchedulerTests",
+TESTS = ("CodexAppServerProtocolTests", "GitBranchReaderTests", "CursorHookPayloadTests", "HookIntakeGoldenTests", "HookEdgeFactsTests", "BridgeGoldenHarness", "BridgeGoldenFixtures",
+         "BridgeGoldenExpectations", "AntigravityHookContractTests", "GrokHookForwardingPolicyTests", "ESP32ProtocolTests", "AppleCompanionPayloadTests", "ClaudeQuotaTests", "ClaudeQuotaSchedulerTests", "FollowUpReminderSchedulerTests",
          "RemoteReconnectPolicyTests", "ClaudeUsageScannerTests", "ModelLabelTests",
          "CoworkSessionTests", "CoworkAuditLogTests", "AgentTaskListTests", "AttentionPolicyTests", "DerivedSessionStateTests",
          "HookEventFactsTests", "HookEventToolUseIdTests", "OutOfOrderToolStepTests",
-         "PushChannelPayloadTests", "PushRedactionTests", "PushPolicyTests", "ReplyCompletePlaceholderTests",
+         "PushSigningAndResponseTests", "PushChannelPayloadTests", "PushRedactionTests", "PushPolicyTests", "ReplyCompletePlaceholderTests",
          "SessionRecapTests", "SubsessionReducerTests", "SubsessionRouterTests", "SubsessionTestSupport")
 
 
@@ -46,7 +48,7 @@ def main():
     parser.add_argument("--configuration", choices=("debug", "release"), default="debug")
     args = parser.parse_args()
     if args.action == "macos-test":
-        subprocess.run(["swift", "test", "--package-path", str(ROOT), "--filter", "|".join((*TESTS, "SessionListOrderingTests", "IdleSessionRemovalTests"))], check=True)
+        subprocess.run(["swift", "test", "--package-path", str(ROOT), "--filter", "|".join((*TESTS, "SessionListOrderingTests", "IdleSessionRemovalTests", "CodexAppServerClientTests", "CodexAutoReviewRoutingTests", "ApprovalTrustBoundaryTests"))], check=True)
         return
     if args.scratch is None:
         parser.error("--scratch is required for a desktop build")

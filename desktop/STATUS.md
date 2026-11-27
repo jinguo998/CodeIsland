@@ -332,7 +332,7 @@
 
 ## macOS source parity
 
-The Windows app executes the original Swift session reducer, attention policy, reminder scheduler, quota client, usage scanner and built-in push request builders. Tauri loads the shared library from the installer. Windows supplies process observations, window placement and activation, input and request transport.
+The local hook calls the macOS Swift `HookIntake`. The Windows app calls the same Swift for session transitions, tool and task history, attention, reminders, quotas, Cowork file contents, Codex approval rules and app-server messages, built-in push channels, SSH reconnect decisions, and Buddy and iPhone BLE framing. Tauri loads the library from the installed application. Windows supplies the live file watchers, process discovery, window activation, transports and hardware handles.
 
 | Swift source | Windows implementation and verification |
 | --- | --- |

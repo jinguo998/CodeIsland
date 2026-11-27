@@ -632,6 +632,16 @@ public struct SessionSnapshot: Sendable {
         return result
     }
 
+    /// Keep the original volume or UNC root when locating Cursor's project directory.
+    static func cursorProjectDirectory(in transcript: String) -> String? {
+        let path = ConfigPathIdentity.isWindowsAbsolute(transcript)
+            ? transcript.replacingOccurrences(of: #"\"#, with: "/") : transcript
+        guard let marker = path.range(of: "/.cursor/projects/") else { return nil }
+        let project = path[marker.upperBound...].prefix { $0 != "/" }
+        guard !project.isEmpty else { return nil }
+        return String(path[..<project.endIndex])
+    }
+
     private static func computeDisplayNameLeafFromCursorProjectsPath(_ cwd: String) -> String? {
         let marker = "/.cursor/projects/"
         guard let range = cwd.range(of: marker) else { return nil }
@@ -1913,12 +1923,8 @@ public func fillMissingParentMetadataFromSubagentEvent(
                   let first = roots.first, !first.isEmpty {
             sessions[sessionId]?.cwd = first
         } else if let tp = event.rawJSON["transcript_path"] as? String,
-                  tp.contains("/.cursor/projects/") {
-            let parts = tp.split(separator: "/")
-            if let idx = parts.firstIndex(of: "projects"), idx + 1 < parts.count {
-                let projectName = String(parts[idx + 1])
-                sessions[sessionId]?.cwd = "/\(parts[...idx].joined(separator: "/"))/\(projectName)"
-            }
+                  let project = SessionSnapshot.cursorProjectDirectory(in: tp) {
+            sessions[sessionId]?.cwd = project
         }
     }
 
@@ -2068,16 +2074,8 @@ public func extractMetadata(into sessions: inout [String: SessionSnapshot], sess
     } else if sessions[sessionId]?.cwd == nil
         || SessionSnapshot.isUnhelpfulHookCwd(sessions[sessionId]?.cwd ?? ""),
               let tp = event.rawJSON["transcript_path"] as? String,
-              tp.contains("/.cursor/projects/") {
-        // Cursor: extract project dir from transcript_path
-        // e.g. ~/.cursor/projects/<project>/agent-transcripts/... → ~/.cursor/projects/<project>
-        // Must stay Cursor-scoped: Claude transcripts also contain a "projects"
-        // component (~/.claude/projects/<encoded>/…) that is not a workspace.
-        let parts = tp.split(separator: "/")
-        if let idx = parts.firstIndex(of: "projects"), idx + 1 < parts.count {
-            let projectName = String(parts[idx + 1])
-            sessions[sessionId]?.cwd = "/\(parts[...idx].joined(separator: "/"))/\(projectName)"
-        }
+              let project = SessionSnapshot.cursorProjectDirectory(in: tp) {
+        sessions[sessionId]?.cwd = project
     } else if sessions[sessionId]?.cwd == nil, let cwd = eventCwd, !cwd.isEmpty {
         // Last resort: an unhelpful cwd ($HOME, ~/.claude) still beats nil —
         // transcript-based model lookup keys off it, and the display layer

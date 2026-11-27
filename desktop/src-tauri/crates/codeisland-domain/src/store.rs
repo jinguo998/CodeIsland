@@ -490,7 +490,12 @@ impl SessionStore {
         approval_config: Option<PathBuf>,
     ) -> ApplyOutcome {
         let session_id = event.session_id.clone();
-        if !self.mark_seen(&event.id) || !self.accept_removed_idle_event(event) {
+        let cursor_repeat = event.agent == AgentKind::Cursor && event.payload.as_ref()
+            .and_then(|payload| payload["_cursor_payload_digest"].as_str())
+            .is_some_and(|digest| self.native.call(c"hook.seenCursor", serde_json::json!({
+                "digest": digest, "now": Utc::now().timestamp_micros(),
+            })));
+        if cursor_repeat || !self.mark_seen(&event.id) || !self.accept_removed_idle_event(event) {
             return ApplyOutcome {
                 applied: false,
                 session_id,

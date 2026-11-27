@@ -85,6 +85,8 @@ jobs:
   windows:
     name: Windows build and tests
     runs-on: windows-2022
+    env:
+      CODEISLAND_SWIFT_SCRATCH: ${{ github.workspace }}/.build/desktop-swift
     defaults:
       run:
         working-directory: desktop
@@ -112,7 +114,7 @@ jobs:
         shell: pwsh
         run: ./scripts/prepare-sidecar.ps1
       - name: Test original Swift core on Windows
-        run: python scripts/build-swift.py test --scratch "${{ runner.temp }}/codeisland-swift-tests"
+        run: python scripts/build-swift.py test --scratch "$env:CODEISLAND_SWIFT_SCRATCH"
       - name: Test workspace
         working-directory: desktop/src-tauri
         run: cargo test --workspace

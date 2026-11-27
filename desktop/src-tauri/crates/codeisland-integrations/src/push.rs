@@ -373,14 +373,17 @@ impl PushNotifier {
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
         let request = self.build_content(kind, title, headline, body)?;
-        let (result, retry) = exchange(&client, self.channel, &request).await;
-        if !reminder && matches!(kind, PushKind::Approval | PushKind::Question | PushKind::Error)
-            && let Some(delay) = retry
-        {
+        let event = if reminder || kind == PushKind::DisplayOnlyWait {
+            "reminder"
+        } else {
+            crate::push_channels::event_name(kind)
+        };
+        let (result, retry) = exchange(&client, self.channel, &request, event).await;
+        if let Some(delay) = retry {
             tokio::time::sleep(delay).await;
             // Signed chat requests get a fresh timestamp.
             let request = self.build_content(kind, title, headline, body)?;
-            return exchange(&client, self.channel, &request).await.0;
+            return exchange(&client, self.channel, &request, event).await.0;
         }
         result
     }
@@ -407,12 +410,12 @@ async fn exchange(
     client: &reqwest::Client,
     channel: PushChannel,
     request: &PushRequest,
+    event: &str,
 ) -> (Result<(), PushError>, Option<Duration>) {
-    let fallback_delay = Duration::from_secs(5);
     let response = tokio::time::timeout(Duration::from_secs(8), send_request(client, request)).await;
     let (status, retry_after, body) = match response {
-        Err(_) => return (Err(PushError::Timeout), Some(fallback_delay)),
-        Ok(Err(error @ PushError::Http(_))) => return (Err(error), Some(fallback_delay)),
+        Err(_) => return (Err(PushError::Timeout), retry_delay(event, None, None, &[])),
+        Ok(Err(error @ PushError::Http(_))) => return (Err(error), retry_delay(event, None, None, &[])),
         Ok(Err(error)) => return (Err(error), None),
         Ok(Ok(response)) => response,
     };
@@ -422,28 +425,25 @@ async fn exchange(
             .ok_or(PushError::ServiceRejected);
         return (result, None);
     }
-    let retry = match code {
-        429 => {
-            let delay = retry_after.or_else(|| {
-                let json = serde_json::from_slice::<serde_json::Value>(&body).ok()?;
-                json["parameters"]["retry_after"].as_u64().map(Duration::from_secs)
-            }).unwrap_or(fallback_delay);
-            Some(delay.clamp(Duration::from_secs(1), Duration::from_secs(30)))
-        }
-        500..=599 => Some(fallback_delay),
-        _ => None,
-    };
-    (Err(PushError::Rejected(code)), retry)
+    (Err(PushError::Rejected(code)), retry_delay(event, Some(code), retry_after, &body))
+}
+
+fn retry_delay(event: &str, status: Option<u16>, after: Option<String>, body: &[u8]) -> Option<Duration> {
+    let seconds: Option<f64> = codeisland_swift::call(c"push.retry", serde_json::json!({
+        "kind": event, "status": status, "after": after,
+        "body": if status == Some(429) { String::from_utf8_lossy(body) } else { "".into() },
+    }));
+    seconds.map(Duration::from_secs_f64)
 }
 
 async fn send_request(
     client: &reqwest::Client,
     request: &PushRequest,
-) -> Result<(reqwest::StatusCode, Option<Duration>, Vec<u8>), PushError> {
+) -> Result<(reqwest::StatusCode, Option<String>, Vec<u8>), PushError> {
     let mut url = Url::parse(&request.url)
         .map_err(|_| PushError::InvalidTarget("expected an HTTP or HTTPS URL".into()))?;
     let method = if request.method == "GET" { reqwest::Method::GET } else { reqwest::Method::POST };
-    for hop in 0..=5 {
+    for hop in 0.. {
         let mut builder = client.request(method.clone(), url.clone());
         for (name, value) in &request.headers {
             builder = builder.header(name.as_str(), value.as_str());
@@ -458,21 +458,16 @@ async fn send_request(
         {
             let next = location.to_str().ok().and_then(|location| url.join(location).ok())
                 .filter(|next| {
-                    hop < 5 && matches!(next.scheme(), "http" | "https")
-                        && next.host_str() == url.host_str()
-                        && (url.scheme() != "https" || next.scheme() == "https")
-                        && next.username().is_empty() && next.password().is_none()
+                    next.username().is_empty() && next.password().is_none()
+                        && codeisland_swift::call(c"push.redirect", serde_json::json!({
+                            "from": url.as_str(), "to": next.as_str(), "count": hop,
+                        }))
                 }).ok_or(PushError::RedirectRefused)?;
             url = next;
             continue;
         }
         let retry_after = response.headers().get(reqwest::header::RETRY_AFTER)
-            .and_then(|value| value.to_str().ok()).and_then(|value| {
-                value.parse::<u64>().ok().map(Duration::from_secs).or_else(|| {
-                    let date = chrono::DateTime::parse_from_rfc2822(value).ok()?;
-                    Some((date.with_timezone(&chrono::Utc) - chrono::Utc::now()).to_std().unwrap_or_default())
-                })
-            });
+            .and_then(|value| value.to_str().ok()).map(str::to_owned);
         let body = response.bytes().await.map_err(|error| error.without_url())?.to_vec();
         return Ok((status, retry_after, body));
     }

@@ -1,15 +1,14 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 use codeisland_domain::RemoteHostSetting;
-use codeisland_integrations::ssh::{RemoteHost, SshManager};
+use codeisland_integrations::ssh::{ReconnectPolicy, ReconnectStep, RemoteHost, SshManager};
 use codeisland_runtime::{Runtime, remote_hook_handler};
 use tokio::sync::{Mutex as AsyncMutex, oneshot, watch};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
-const STABLE_AFTER: Duration = Duration::from_secs(120);
-const OFFLINE_RECHECK: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Copy, Default)]
 struct RecoveryState {
@@ -19,30 +18,33 @@ struct RecoveryState {
 }
 
 #[derive(Clone)]
-pub(crate) struct RecoverySignals(watch::Sender<RecoveryState>);
+pub(crate) struct RecoverySignals {
+    events: watch::Sender<RecoveryState>,
+    policy: Arc<ReconnectPolicy>,
+}
 
 impl Default for RecoverySignals {
     fn default() -> Self {
-        Self(watch::channel(RecoveryState::default()).0)
+        Self { events: watch::channel(RecoveryState::default()).0, policy: Arc::default() }
     }
 }
 
 impl RecoverySignals {
     pub(crate) fn wake(&self) {
-        self.0.send_modify(|state| {
+        self.events.send_modify(|state| {
             state.generation = state.generation.wrapping_add(1);
-            state.settle = Duration::from_secs(3);
+            state.settle = self.policy.wake();
         });
     }
 
     pub(crate) fn network(&self, online: Option<bool>) {
-        self.0.send_if_modified(|state| {
+        self.events.send_if_modified(|state| {
             if state.network == online {
                 return false;
             }
-            if state.network == Some(false) && online == Some(true) {
+            if let Some(settle) = self.policy.network(online) {
                 state.generation = state.generation.wrapping_add(1);
-                state.settle = Duration::from_secs(2);
+                state.settle = settle;
             }
             state.network = online;
             true
@@ -157,7 +159,7 @@ impl Connections {
         hosts.insert(host_id.clone(), connection.clone());
         let (send, receive) = oneshot::channel();
         tauri::async_runtime::spawn(maintain(
-            connection, runtime, host_id, send, self.recovery.0.subscribe(),
+            connection, runtime, host_id, send, self.recovery.events.subscribe(),
         ));
         Some(receive)
     }
@@ -198,7 +200,8 @@ async fn maintain(
 ) {
     let mut cancelled = connection.cancel.subscribe();
     let mut first_result = Some(first_result);
-    let mut failures = 0usize;
+    let policy = ReconnectPolicy::default();
+    policy.start(&host_id);
     let mut generation = recovery.borrow().generation;
     loop {
         connection.set_phase(Phase::Connecting);
@@ -215,20 +218,17 @@ async fn maintain(
         }
         match outcome {
             Ok(()) => {
-                let connected_at = Instant::now();
+                policy.connected(&host_id);
                 tokio::select! {
                     _ = cancelled.wait_for(|cancelled| *cancelled) => break,
                     _ = wait_for_drop(&connection, &runtime, &host_id) => {}
                 }
-                if connected_at.elapsed() >= STABLE_AFTER {
-                    failures = 0;
-                }
-                // A live tunnel survives wake or network recovery. Reset
-                // backoff for a later failure, leaving the transport alone.
-                let current = recovery.borrow_and_update().generation;
-                if current != generation {
-                    generation = current;
-                    failures = 0;
+                let current = *recovery.borrow_and_update();
+                policy.network(current.network);
+                if current.generation != generation {
+                    generation = current.generation;
+                    // Recovery while the tunnel was up resets its backoff.
+                    policy.recover(&host_id);
                 }
             }
             Err(error) => tracing::debug!(%host_id, %error, "SSH connection failed"),
@@ -238,12 +238,17 @@ async fn maintain(
         else {
             break;
         };
+        policy.network(recovery.borrow().network);
+        let step = policy.failed(&host_id, auto_retry);
         tokio::select! {
             biased;
             _ = cancelled.wait_for(|cancelled| *cancelled) => break,
-            _ = wait_for_retry(&connection, &mut recovery, auto_retry, &mut generation, &mut failures) => {}
+            reconnect = wait_for_retry(&connection, &policy, &host_id, step, &mut recovery, &mut generation) => {
+                if !reconnect { break; }
+            }
         }
     }
+    policy.stop(&host_id);
     connection.manager.lock().await.disconnect().await;
     connection.set_phase(Phase::Disconnected);
     connection.stopped.send_replace(true);
@@ -251,40 +256,43 @@ async fn maintain(
 
 async fn wait_for_retry(
     connection: &Connection,
+    policy: &ReconnectPolicy,
+    host: &str,
+    mut step: ReconnectStep,
     recovery: &mut watch::Receiver<RecoveryState>,
-    auto_retry: bool,
     generation: &mut u64,
-    failures: &mut usize,
-) {
-    let mut backoff = None;
+) -> bool {
     loop {
-        let state = *recovery.borrow_and_update();
-        let reset = state.generation != *generation;
-        if reset {
-            *generation = state.generation;
-            *failures = 0;
-            backoff = Some(state.settle);
-        }
-        let delay = if state.network == Some(false) && (auto_retry || backoff.is_some()) {
-            connection.set_phase(Phase::Offline);
-            OFFLINE_RECHECK
-        } else if auto_retry || backoff.is_some() {
-            connection.set_phase(Phase::Retrying);
-            *backoff.get_or_insert_with(|| {
-                *failures += 1;
-                retry_delay(*failures)
-            })
-        } else {
-            connection.set_phase(Phase::Disconnected);
-            if recovery.changed().await.is_err() {
-                return;
-            }
-            continue;
+        let (phase, delay) = match step {
+            ReconnectStep::Connect => return true,
+            ReconnectStep::None => (Phase::Disconnected, None),
+            ReconnectStep::Retry { seconds } => (Phase::Retrying, Some(Duration::from_secs_f64(seconds))),
+            ReconnectStep::Offline { seconds } => (Phase::Offline, Some(Duration::from_secs_f64(seconds))),
         };
-        tokio::select! {
-            _ = tokio::time::sleep(delay) => return,
-            change = recovery.changed() => if change.is_err() { return },
+        connection.set_phase(phase);
+        let mut deadline = delay.map(|delay| Instant::now() + delay);
+        let mut recovering = false;
+        loop {
+            let state = *recovery.borrow_and_update();
+            policy.network(state.network);
+            if state.generation != *generation {
+                *generation = state.generation;
+                policy.wake();
+                recovering = true;
+                deadline = Some(Instant::now() + state.settle);
+                connection.set_phase(if state.network == Some(false) { Phase::Offline } else { Phase::Retrying });
+            }
+            tokio::select! {
+                change = recovery.changed() => if change.is_err() { return false },
+                _ = async {
+                    match deadline {
+                        Some(time) => tokio::time::sleep_until(time).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => break,
+            }
         }
+        step = if recovering { policy.recover(host) } else { policy.due(host) };
     }
 }
 
@@ -311,29 +319,26 @@ async fn wait_for_drop(connection: &Connection, runtime: &Runtime, host_id: &str
     }
 }
 
-fn retry_delay(failures: usize) -> Duration {
-    let schedule = [5, 15, 45, 120, 300];
-    Duration::from_secs(if failures <= 10 {
-        schedule[failures.saturating_sub(1).min(schedule.len() - 1)]
-    } else {
-        900
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn reconnect_uses_original_fast_and_slow_schedule() {
-        let actual: Vec<_> = (1..=12).map(|attempt| retry_delay(attempt).as_secs()).collect();
+        let policy = ReconnectPolicy::default();
+        assert_eq!(policy.start("test"), ReconnectStep::Connect);
+        let actual: Vec<_> = (0..12).map(|_| {
+            let ReconnectStep::Retry { seconds } = policy.failed("test", true) else { panic!("expected retry") };
+            assert_eq!(policy.due("test"), ReconnectStep::Connect);
+            Duration::from_secs_f64(seconds).as_secs()
+        }).collect();
         assert_eq!(actual, [5, 15, 45, 120, 300, 300, 300, 300, 300, 300, 900, 900]);
     }
 
     #[test]
     fn only_recovery_and_wake_advance_the_reconnect_generation() {
         let signals = RecoverySignals::default();
-        let status = signals.0.subscribe();
+        let status = signals.events.subscribe();
         signals.network(Some(true));
         assert_eq!(status.borrow().generation, 0);
         signals.network(Some(false));

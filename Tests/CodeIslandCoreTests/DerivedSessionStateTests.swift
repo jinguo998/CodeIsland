@@ -261,6 +261,14 @@ final class DerivedSessionStateTests: XCTestCase {
         XCTAssertEqual(sessions["s1"]?.cwd, "\(home)/.cursor/projects/enc-proj")
     }
 
+    func testCursorTranscriptProjectPreservesWindowsVolumeAndNetworkRoots() {
+        XCTAssertEqual(SessionSnapshot.cursorProjectDirectory(in: #"C:\Users\me\.cursor\projects\active\t.jsonl"#),
+                       "C:/Users/me/.cursor/projects/active")
+        XCTAssertEqual(SessionSnapshot.cursorProjectDirectory(in: #"\\server\projects\me\.cursor\projects\active\t.jsonl"#),
+                       "//server/projects/me/.cursor/projects/active")
+        XCTAssertNil(SessionSnapshot.cursorProjectDirectory(in: "/repo/.claude/projects/active/t.jsonl"))
+    }
+
     func testStopDoesNotDuplicateReplyAlreadyAppendedByTranscriptTailer() throws {
         // mcode's Stop carries last_assistant_message — the same reply the
         // transcript tailer appends when the assistant row lands. The Stop

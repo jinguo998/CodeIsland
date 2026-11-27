@@ -9,6 +9,8 @@ private final class DesktopContext {
     var usage = ClaudeUsageScanner.FileCache()
     var sessions = DesktopSessions()
     var cowork = CoworkAuditState()
+    var cursor = CursorHookDeliveryFilter()
+    var reconnect = RemoteReconnectPolicy()
 
     func copy() -> DesktopContext {
         let result = DesktopContext()
@@ -17,6 +19,8 @@ private final class DesktopContext {
         result.usage = usage
         result.sessions = sessions
         result.cowork = cowork
+        result.cursor = cursor
+        result.reconnect = reconnect
         return result
     }
 }
@@ -61,9 +65,31 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
     let decoder = JSONDecoder()
     let encoder = JSONEncoder()
     switch op {
+    case "codex.rpc", "codex.questions", "codex.threadStatus", "codex.questionResult":
+        return try codexMessage(op, data)
+    case let operation where operation.hasPrefix("ssh."):
+        guard let state else { throw BridgeError.missingContext }
+        return try reconnectOperation(operation, data, policy: &state.reconnect)
+    case "codex.enableHooks":
+        return try encoder.encode(CodexHooksConfig.enablingHooks(in: decoder.decode(String.self, from: data)))
+    case "codex.prefixes", "codex.matches", "codex.scope", "codex.persist":
+        return try codexRule(op, data)
+    case "hook.seenCursor":
+        struct Delivery: Decodable { let digest: String; let now: Int64 }
+        guard let state else { throw BridgeError.missingContext }
+        let delivery = try decoder.decode(Delivery.self, from: data)
+        let date = Date(timeIntervalSince1970: Double(delivery.now) / 1_000_000)
+        return try encoder.encode(state.cursor.isRepeat(digest: delivery.digest, now: date))
+    case "hook.admit", "hook.prepare": return try prepareHook(op, data)
+    case "git.branch":
+        let cwd = try decoder.decode(String.self, from: data)
+        return try encoder.encode(GitBranchReader.read(cwd: cwd, maxDepth: 64)?.branch)
+    case "companion.frames": return try companionFrames(data)
+    case let operation where operation.hasPrefix("buddy."): return try buddy(operation, data)
     case "pushEndpoint":
         let endpoint = PushEndpoint.parse(try decoder.decode(String.self, from: data))
         return try encoder.encode(endpoint.map { [$0.url.absoluteString, $0.authorization] })
+    case "push.retry", "push.redirect": return try pushTransportPolicy(op, data)
     case "renderPush": return try renderPush(data)
     case "acceptPush": return try acceptPush(data)
     case "truncatePushText":

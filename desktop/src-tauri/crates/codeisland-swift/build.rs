@@ -6,7 +6,12 @@ use std::process::Command;
 fn main() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(4).unwrap();
     let output = PathBuf::from(env::var_os("OUT_DIR").unwrap());
-    let scratch = output.join("swiftpm");
+    // CI builds the hook, tests and installer sequentially in one checkout.
+    // Reuse SwiftPM's debug/release products there. Independent Cargo
+    // invocations retain their own staging directories by default.
+    println!("cargo:rerun-if-env-changed=CODEISLAND_SWIFT_SCRATCH");
+    let scratch = env::var_os("CODEISLAND_SWIFT_SCRATCH").map(PathBuf::from)
+        .unwrap_or_else(|| output.join("swiftpm"));
     let profile = if env::var("PROFILE").unwrap() == "debug" { "debug" } else { "release" };
     for input in ["Sources/CodeIslandCore", "Tests/CodeIslandCoreTests", "desktop/swift", "desktop/scripts/build-swift.py", "desktop/scripts/stage-swift-runtime.ps1"] {
         println!("cargo:rerun-if-changed={}", root.join(input).display());

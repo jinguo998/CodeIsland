@@ -6,6 +6,7 @@
 //! mapped best-effort so a hook never takes its agent down.
 
 use codeisland_domain::{AgentEvent, AgentEventType, AgentKind, codex_desktop_session_id};
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::AgentError;
@@ -33,12 +34,70 @@ pub fn normalize_with_ppid(
 ) -> Result<AgentEvent, AgentError> {
     // Hooks occasionally run with empty stdin. Treat that as an empty object
     // so the event name alone can still drive the panel.
-    let mut payload: Value = if raw.trim().is_empty() {
+    let payload: Value = if raw.trim().is_empty() {
         Value::Object(Map::new())
     } else {
         serde_json::from_str(raw)?
     };
 
+    Ok(project_event(source, event_name, payload, cwd_hint, ppid_hint))
+}
+
+#[derive(Deserialize)]
+pub struct HookAdmission {
+    pub admitted: bool,
+    pub immediate: Option<String>,
+}
+
+pub fn local_hook_admission(source: &str, event: &str) -> HookAdmission {
+    codeisland_swift::call(c"hook.admit", json!({
+        "source": source.trim_start_matches("codeisland-"), "event": event,
+    }))
+}
+
+pub struct LocalHook {
+    pub event: AgentEvent,
+    pub immediate: Option<String>,
+    pub delay: std::time::Duration,
+    pub cursor: bool,
+}
+
+/// Run in the hook process so Swift sees the firing agent's environment and
+/// the original stdin bytes. Socket clients already carry their own context.
+pub fn prepare_local_hook(source: &str, tag: &str, raw: &str, cwd: Option<&str>, ppid: u32) -> Result<Option<LocalHook>, AgentError> {
+    #[derive(Deserialize)]
+    struct Prepared {
+        source: String,
+        payload: Value,
+        fallback: bool,
+        immediate: Option<String>,
+        waits: bool,
+        cursor: bool,
+        delay: f64,
+    }
+    let Some(mut hook) = codeisland_swift::call::<Option<Prepared>>(c"hook.prepare", json!({
+        "source": source.trim_start_matches("codeisland-"), "event": tag, "raw": raw, "cwd": cwd,
+        "parent": i32::try_from(ppid).ok(),
+    })) else {
+        if !raw.trim().is_empty() { serde_json::from_str::<Value>(raw)?; }
+        return Ok(None);
+    };
+    if hook.fallback {
+        // Windows plugins also send IDs in fields outside the upstream hook schema.
+        if let Some(id) = serde_json::from_str(raw).ok().as_ref().and_then(pick_session_id) {
+            hook.payload["session_id"] = Value::String(id);
+        }
+    }
+    let mut event = project_event(&hook.source, tag, hook.payload, cwd, Some(ppid));
+    if hook.cursor && !hook.waits && event.event_type.is_blocking() { return Ok(None); }
+    event.waits = hook.waits || (!hook.cursor && event.event_type.is_blocking());
+    Ok(Some(LocalHook { event, immediate: hook.immediate, delay: std::time::Duration::from_secs_f64(hook.delay),
+        cursor: hook.cursor }))
+}
+
+fn project_event(
+    source: &str, event_name: &str, mut payload: Value, cwd_hint: Option<&str>, ppid_hint: Option<u32>,
+) -> AgentEvent {
     let agent = kind_for_source(source);
 
     // Prefer the event name carried in the payload (Claude and forks send
@@ -172,7 +231,7 @@ pub fn normalize_with_ppid(
         }
     }
     event.payload = Some(payload);
-    Ok(event)
+    event
 }
 
 /// A session id that is stable for one agent process without a wire id:

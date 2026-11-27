@@ -222,47 +222,17 @@ impl MascotId {
     /// slots. Antigravity folds onto Gemini and MiMo onto OpenCode when the
     /// dedicated slot is already used, mirroring the macOS implementation.
     pub fn from_source(source: &str) -> Option<Self> {
-        Some(match source.to_ascii_lowercase().as_str() {
-            "claude" | "claude-code" | "claude_code" => Self::Claude,
-            "codex" => Self::Codex,
-            "gemini" | "gemini-cli" | "google-antigravity" => Self::Gemini,
-            "cursor" | "cursor-cli" => Self::Cursor,
-            "copilot" => Self::Copilot,
-            "trae" | "traecn" | "traecli" => Self::Trae,
-            "qoder" | "qoder-cli" | "qodercn" | "qoderwork" => Self::Qoder,
-            "droid" | "factory" => Self::Droid,
-            "codebuddy" | "codybuddycn" => Self::CodeBuddy,
-            "stepfun" => Self::StepFun,
-            "opencode" | "mimo" => Self::OpenCode,
-            "qwen" => Self::Qwen,
-            "antigravity" => Self::Antigravity,
-            "workbuddy" => Self::WorkBuddy,
-            "hermes" => Self::Hermes,
-            "kimi" => Self::Kimi,
-            _ => return None,
-        })
+        let source = match source.trim().to_ascii_lowercase().as_str() {
+            "claude-code" | "claude_code" => "claude",
+            "gemini-cli" => "gemini",
+            _ => source,
+        };
+        let slot: Option<u8> = codeisland_swift::call(c"buddy.source", source);
+        slot.and_then(Self::from_raw)
     }
 
     pub fn from_agent(agent: AgentKind) -> Option<Self> {
-        match agent {
-            AgentKind::Claude => Some(Self::Claude),
-            AgentKind::Codex => Some(Self::Codex),
-            AgentKind::Gemini => Some(Self::Gemini),
-            AgentKind::Cursor => Some(Self::Cursor),
-            AgentKind::Copilot => Some(Self::Copilot),
-            AgentKind::Trae | AgentKind::TraeCn | AgentKind::TraeCli => Some(Self::Trae),
-            AgentKind::Qoder | AgentKind::QoderCn | AgentKind::QoderWork => Some(Self::Qoder),
-            AgentKind::Factory => Some(Self::Droid),
-            AgentKind::CodeBuddy | AgentKind::CodyBuddyCn => Some(Self::CodeBuddy),
-            AgentKind::StepFun => Some(Self::StepFun),
-            AgentKind::OpenCode | AgentKind::MiMo => Some(Self::OpenCode),
-            AgentKind::Qwen => Some(Self::Qwen),
-            AgentKind::Antigravity => Some(Self::Antigravity),
-            AgentKind::WorkBuddy => Some(Self::WorkBuddy),
-            AgentKind::Hermes => Some(Self::Hermes),
-            AgentKind::Kimi => Some(Self::Kimi),
-            _ => None,
-        }
+        Self::from_source(agent.tag())
     }
 }
 
@@ -384,16 +354,15 @@ pub enum BuddyUplinkEvent {
 
 impl BuddyUplinkEvent {
     pub fn decode(payload: &[u8]) -> Option<Self> {
-        let first = *payload.first()?;
-        // Pair responses are checked first; mascot raw values are 0..=15 and
-        // therefore never collide with the 0xE0..=0xE2 reserved range.
-        if let Some(response) = BuddyPairResponse::from_raw(first) {
-            return Some(Self::PairResponse(response));
+        #[derive(serde::Deserialize)]
+        struct Event { kind: String, value: u8 }
+        let event: Event = codeisland_swift::call::<Option<Event>>(c"buddy.uplink", payload)?;
+        match event.kind.as_str() {
+            "focus" => MascotId::from_raw(event.value).map(Self::Focus),
+            "command" => BuddyControlCommand::from_raw(event.value).map(Self::Command),
+            "pair" => BuddyPairResponse::from_raw(event.value).map(Self::PairResponse),
+            _ => None,
         }
-        if let Some(mascot) = MascotId::from_raw(first) {
-            return Some(Self::Focus(mascot));
-        }
-        BuddyControlCommand::from_raw(first).map(Self::Command)
     }
 }
 
@@ -441,118 +410,75 @@ pub enum BuddyFrame {
 
 /// Agent frame: `[sourceId, statusId, toolLen, toolName...]`.
 pub fn agent_frame(mascot: MascotId, status: MascotStatus, tool_name: Option<&str>) -> Vec<u8> {
-    let tool = tool_name.unwrap_or("");
-    let bytes = truncate_utf8(tool, MAX_TOOL_NAME_BYTES);
-    let mut frame = Vec::with_capacity(3 + bytes.len());
-    frame.push(mascot.raw());
-    frame.push(status.raw());
-    frame.push(bytes.len() as u8);
-    frame.extend_from_slice(&bytes);
-    frame
+    codeisland_swift::call(c"buddy.agent", serde_json::json!({"mascot":mascot.raw(),"status":status.raw(),"tool":tool_name}))
 }
 
 /// Workspace frame: `[0xFC, len, workspace...]`.
 pub fn workspace_frame(name: Option<&str>) -> Vec<u8> {
-    let bytes = truncate_utf8(name.unwrap_or("").trim(), MAX_WORKSPACE_NAME_BYTES);
-    let mut frame = Vec::with_capacity(2 + bytes.len());
-    frame.push(WORKSPACE_MARKER);
-    frame.push(bytes.len() as u8);
-    frame.extend_from_slice(&bytes);
-    frame
+    codeisland_swift::call(c"buddy.workspace", name)
 }
 
 /// Message preview frame:
 /// `[0xFB, index, total, (isUser << 7) | len, text...]`.
 pub fn preview_frame(index: u8, total: u8, is_user: bool, text: Option<&str>) -> Vec<u8> {
-    let bytes = truncate_utf8(text.unwrap_or(""), MAX_MESSAGE_PREVIEW_BYTES);
-    let flags = (if is_user { 0x80 } else { 0x00 }) | bytes.len() as u8;
-    let mut frame = Vec::with_capacity(4 + bytes.len());
-    frame.push(MESSAGE_PREVIEW_MARKER);
-    frame.push(index);
-    frame.push(total);
-    frame.push(flags);
-    frame.extend_from_slice(&bytes);
-    frame
+    codeisland_swift::call(c"buddy.preview", serde_json::json!({"index":index,"total":total,"user":is_user,"text":text}))
 }
 
 /// Brightness frame: `[0xFE, percent]`, clamped to 10..=100.
 pub fn brightness_frame(percent: u8) -> Vec<u8> {
-    vec![BRIGHTNESS_MARKER, percent.clamp(MIN_BRIGHTNESS, MAX_BRIGHTNESS)]
+    codeisland_swift::call(c"buddy.brightness", percent)
 }
 
 /// Orientation frame: `[0xFD, 0|1]`.
 pub fn orientation_frame(orientation: BuddyScreenOrientation) -> Vec<u8> {
-    vec![ORIENTATION_MARKER, orientation.wire_value()]
+    codeisland_swift::call(c"buddy.orientation", orientation.wire_value())
 }
 
 /// Model frame: `[0xF9, len, model...]`.
 pub fn model_frame(model: Option<&str>) -> Vec<u8> {
-    let bytes = truncate_utf8(model.unwrap_or(""), MAX_MODEL_NAME_BYTES);
-    let mut frame = Vec::with_capacity(2 + bytes.len());
-    frame.push(MODEL_MARKER);
-    frame.push(bytes.len() as u8);
-    frame.extend_from_slice(&bytes);
-    frame
+    codeisland_swift::call(c"buddy.model", model)
 }
 
 /// Stats frame: `[0xFA, active, total, toolHi, toolLo, minutes]`.
 pub fn stats_frame(active_sessions: u8, total_sessions: u8, tool_calls: u16, session_minutes: u8) -> Vec<u8> {
-    vec![
-        STATS_MARKER,
-        active_sessions,
-        total_sessions,
-        (tool_calls >> 8) as u8,
-        (tool_calls & 0xFF) as u8,
-        session_minutes,
-    ]
+    codeisland_swift::call(c"buddy.stats", serde_json::json!({
+        "active":active_sessions, "total":total_sessions, "tools":tool_calls, "minutes":session_minutes,
+    }))
 }
 
 /// Subagent frame: `[0xF8, count]`, count clamped to 0..=15.
 pub fn subagent_frame(count: u8) -> Vec<u8> {
-    vec![SUBAGENT_MARKER, count.min(15)]
+    codeisland_swift::call(c"buddy.subagent", count)
 }
 
 /// Event frame: `[0xF7, eventId]`.
 pub fn event_frame(event_id: u8) -> Vec<u8> {
-    vec![EVENT_MARKER, event_id]
+    codeisland_swift::call(c"buddy.event", event_id)
 }
 
 /// Time hint frame: `[0xF6, hour]`, hour clamped to 0..=23.
 pub fn time_hint_frame(hour: u8) -> Vec<u8> {
-    vec![TIME_HINT_MARKER, hour.min(23)]
+    codeisland_swift::call(c"buddy.time", hour)
 }
 
 /// Tool history frame: `[0xF5, index, (success << 7) | len, name...]`.
 pub fn tool_history_frame(index: u8, success: bool, tool_name: &str) -> Vec<u8> {
-    let bytes = truncate_utf8(tool_name, MAX_TOOL_HISTORY_NAME_BYTES);
-    let flags = (if success { 0x80 } else { 0x00 }) | bytes.len() as u8;
-    let mut frame = Vec::with_capacity(3 + bytes.len());
-    frame.push(TOOL_HISTORY_MARKER);
-    frame.push(index);
-    frame.push(flags);
-    frame.extend_from_slice(&bytes);
-    frame
+    codeisland_swift::call(c"buddy.tool", serde_json::json!({"index":index,"success":success,"name":tool_name}))
 }
 
 /// Clear the tool history: `[0xF5, 0, 0]`.
 pub fn tool_history_clear_frame() -> Vec<u8> {
-    vec![TOOL_HISTORY_MARKER, 0, 0]
+    codeisland_swift::call(c"buddy.clear", ())
 }
 
 /// Pair request: `[0xE0, hostId(6)]`, zero-padded.
 pub fn pair_request_frame(host_id: &[u8]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(1 + HOST_ID_LENGTH);
-    frame.push(PAIR_REQUEST_MARKER);
-    frame.extend_from_slice(&pad_host_id(host_id));
-    frame
+    codeisland_swift::call(c"buddy.pair", host_id)
 }
 
 /// Unpair: `[0xE1, hostId(6)]`, zero-padded.
 pub fn unpair_frame(host_id: &[u8]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(1 + HOST_ID_LENGTH);
-    frame.push(UNPAIR_MARKER);
-    frame.extend_from_slice(&pad_host_id(host_id));
-    frame
+    codeisland_swift::call(c"buddy.unpair", host_id)
 }
 
 /// Control opcode (uplink): a single byte.
@@ -1051,18 +977,6 @@ mod manager {
 }
 
 pub use manager::BuddyManager;
-
-fn truncate_utf8(text: &str, limit: usize) -> Vec<u8> {
-    let bytes = text.as_bytes();
-    bytes[..bytes.len().min(limit)].to_vec()
-}
-
-fn pad_host_id(host_id: &[u8]) -> [u8; HOST_ID_LENGTH] {
-    let mut out = [0u8; HOST_ID_LENGTH];
-    let len = host_id.len().min(HOST_ID_LENGTH);
-    out[..len].copy_from_slice(&host_id[..len]);
-    out
-}
 
 fn host_id(bytes: &[u8]) -> Option<[u8; HOST_ID_LENGTH]> {
     if bytes.len() < HOST_ID_LENGTH {
