@@ -142,9 +142,7 @@ func classifyTranscript(_ data: Data) throws -> Data {
             row["role"] = role
         }
     }
-    var line = try JSONSerialization.data(withJSONObject: row)
-    line.append(0x0a)
-    let delta = JSONLTailer.scanLines(line).delta
+    let delta = JSONLTailer.desktopRecord(row)
     let type = row["type"] as? String
     let codex = type == "event_msg" || type == "response_item"
     let publicOutput = codex ? delta.lastAssistantMessage : nil

@@ -86,7 +86,9 @@ def main():
         return
     if args.scratch is None:
         parser.error("--scratch is required for a desktop build")
-    package = args.scratch.resolve() / "package"
+    package = (args.scratch / "package").resolve()
+    if any(package.is_relative_to(ROOT / name) for name in ("Sources", "Tests")):
+        parser.error("--scratch must be outside the original source and test directories")
     # SwiftPM requires every target to be inside its package. The staging area
     # works across volumes on Windows without symlink privileges. It never
     # writes the macOS package or its dependency lockfile.

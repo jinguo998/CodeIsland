@@ -32,7 +32,9 @@ func fetchQuota(in directory: String) throws -> Data {
     }
     switch result.wait() {
     case .success(let snapshot):
-        return try JSONEncoder().encode(Reply(snapshot))
+        let rows = snapshot.limits.filter { $0.percent.isFinite }.map(QuotaRow.init)
+        guard !rows.isEmpty else { return try JSONEncoder().encode(Failure(error: "parse", status: nil)) }
+        return try JSONEncoder().encode(Reply(limits: rows, fetched_at: microseconds(snapshot.fetchedAt)))
     case .failure(let error):
         let reason: String
         var httpStatus: Int?
@@ -52,8 +54,4 @@ private struct Failure: Encodable { let error: String; let status: Int? }
 private struct Reply: Encodable {
     let limits: [QuotaRow]
     let fetched_at: Int64
-    init(_ snapshot: ClaudeQuotaSnapshot) {
-        limits = snapshot.limits.map(QuotaRow.init)
-        fetched_at = microseconds(snapshot.fetchedAt)
-    }
 }

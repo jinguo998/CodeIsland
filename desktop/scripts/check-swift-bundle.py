@@ -2,7 +2,9 @@
 import ctypes
 import json
 import os
+import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -34,6 +36,27 @@ def exercise(core):
         return json.loads(output)
 
     assert invoke(None, b"normalizeEvent", "post_llm_call") == "AgentTurnSettled"
+    # The IPC decoder can reorder keys, including a nested type ahead of the
+    # outer one. Only public assistant output belongs on the card.
+    row = {"payload": {"content": [{"type": "input_text", "text": "private"},
+                                   {"type": "output_text", "text": "done"}],
+                       "role": "assistant", "type": "message"}, "type": "response_item"}
+    assert invoke(None, b"transcript.kind", row)["publicOutput"] == "done"
+    with tempfile.TemporaryDirectory() as temporary:
+        store = Path(temporary) / "closed #1.sqlite"
+        db = sqlite3.connect(store)
+        try:
+            db.execute("PRAGMA journal_mode=WAL")
+            db.execute("CREATE TABLE threads(id, rollout_path, cwd, updated_at, archived, source)")
+            db.execute("INSERT INTO threads VALUES ('a','rollout.jsonl','work',1000,0,'appServer')")
+            db.commit()
+            args = {"path": str(store), "now": 1000}
+            assert invoke(None, b"codex.storeRows", args)[0]["id"] == "a"
+        finally:
+            db.close()
+        before = store.read_bytes()
+        assert invoke(None, b"codex.storeRows", args)[0]["id"] == "a"
+        assert list(store.parent.iterdir()) == [store] and store.read_bytes() == before
     create = core.codeisland_core_create_v1
     create.argtypes = []
     create.restype = ctypes.c_void_p

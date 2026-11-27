@@ -10,7 +10,7 @@ from pathlib import Path
 class Source:
     def __init__(self, root, path):
         self.path = path
-        self.lines = (root / path).read_text(encoding="utf-8").splitlines(keepends=True)
+        self.lines = (root / path).read_bytes().decode("utf-8").splitlines(keepends=True)
 
     def index(self, prefix):
         matches = [i for i, line in enumerate(self.lines) if line.startswith(prefix)]
@@ -56,8 +56,15 @@ def core_selections(root):
     # The only imported Darwin function is memmem; the desktop CRT adapter supplies it.
     yield "AgentTaskParsing", FOUNDATION + task.section("/// A checklist tool")
     tail = source("JSONLTailer")
-    yield "JSONLTailer", (FOUNDATION + tail.section("public enum ConversationTurnStatus", "public final class JSONLTailer")
-                         + "public final class JSONLTailer {\n" + tail.section("    public struct ScanResult"))
+    scanner = (FOUNDATION + tail.section("public enum ConversationTurnStatus", "public final class JSONLTailer")
+               + "public final class JSONLTailer {\n" + tail.section("    public struct ScanResult"))
+    # Rust also sends decoded records, whose keys retain no provider wire order.
+    # Run the original post-decode body with the scanner's private helpers.
+    yield "JSONLTailer", scanner + namespace("extension JSONLTailer",
+        "    public static func desktopRecord(_ json: [String: Any]) -> ScanResult.Delta {\n" +
+        "        var delta = ScanResult.Delta()\n        desktopApply(json, into: &delta)\n        return delta\n    }\n",
+        "    private static func desktopApply(_ json: [String: Any], into delta: inout ScanResult.Delta) {\n" +
+        tail.section('        if json["isMeta"]', "    /// How Claude Code records"))
     ai = source("AiWorkWatchClient")
     yield "AiWorkStatusMapper", FOUNDATION + ai.section("public enum AiWorkStatusMapper", "    public static func fetchBusyDaemonSessionIds") + "}\n"
     codex = source("CodexAppServerClient")
