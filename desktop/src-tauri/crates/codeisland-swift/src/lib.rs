@@ -62,8 +62,7 @@ extern "C" fn receive(bytes: *const u8, len: usize, destination: *mut c_void) {
     }
 }
 
-fn invoke<R: DeserializeOwned>(context: *mut c_void, operation: &CStr, args: impl Serialize) -> R {
-    let input = serde_json::to_vec(&args).expect("encode Swift arguments");
+fn invoke<R: DeserializeOwned>(context: *mut c_void, operation: &CStr, input: &[u8]) -> R {
     let mut result = Vec::<u8>::new();
     let status = unsafe {
         (API.call)(context, operation.as_ptr(), input.as_ptr(), input.len(), receive, (&mut result as *mut Vec<u8>).cast())
@@ -73,7 +72,11 @@ fn invoke<R: DeserializeOwned>(context: *mut c_void, operation: &CStr, args: imp
 }
 
 pub fn call<R: DeserializeOwned>(operation: &CStr, args: impl Serialize) -> R {
-    invoke(std::ptr::null_mut(), operation, args)
+    call_bytes(operation, &serde_json::to_vec(&args).expect("encode Swift arguments"))
+}
+
+pub fn call_bytes<R: DeserializeOwned>(operation: &CStr, bytes: &[u8]) -> R {
+    invoke(std::ptr::null_mut(), operation, bytes)
 }
 
 #[derive(Debug)]
@@ -100,8 +103,12 @@ impl Clone for Context {
 
 impl Context {
     pub fn call<R: DeserializeOwned>(&self, operation: &CStr, args: impl Serialize) -> R {
+        self.call_bytes(operation, &serde_json::to_vec(&args).expect("encode Swift arguments"))
+    }
+
+    pub fn call_bytes<R: DeserializeOwned>(&self, operation: &CStr, bytes: &[u8]) -> R {
         let handle = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
-        invoke(handle.0.as_ptr(), operation, args)
+        invoke(handle.0.as_ptr(), operation, bytes)
     }
 }
 

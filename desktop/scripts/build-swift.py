@@ -12,7 +12,7 @@ BRIDGE = ROOT / "desktop/swift"
 CORE = (
     "ClaudeConfigPaths", "ConfigPathIdentity", "ExtraConfigDirs", "ClaudeDesktopCodeSession", "ClaudeQuota", "ClaudeQuotaClient", "ClaudeQuotaScheduler", "ClaudeUsageScanner", "ModelLabel",
     "AgentTaskList", "AgentTaskParsing", "AttentionPolicy", "BackgroundCompactionFilter",
-    "CodexThreadSubsession", "CursorHookPayload", "CursorSessionFolding", "DeclaredSubsession",
+    "CoworkSession", "CoworkAuditLog", "CodexThreadSubsession", "CursorHookPayload", "CursorSessionFolding", "DeclaredSubsession",
     "EventSoundRouting", "SceneMuteState", "HermesHookPayload", "HermesSessionStore", "HostHarness", "JSONLTailer",
     "Models",
     "PushChannel", "PushNotification", "PushPolicy", "IdleSessionRemoval", "SessionListOrdering", "SessionRecap", "SessionSnapshot",
@@ -21,7 +21,7 @@ CORE = (
 )
 TESTS = ("ClaudeQuotaTests", "ClaudeQuotaSchedulerTests", "FollowUpReminderSchedulerTests",
          "RemoteReconnectPolicyTests", "ClaudeUsageScannerTests", "ModelLabelTests",
-         "AgentTaskListTests", "AttentionPolicyTests", "DerivedSessionStateTests",
+         "CoworkSessionTests", "CoworkAuditLogTests", "AgentTaskListTests", "AttentionPolicyTests", "DerivedSessionStateTests",
          "HookEventFactsTests", "HookEventToolUseIdTests", "OutOfOrderToolStepTests",
          "PushChannelPayloadTests", "PushRedactionTests", "PushPolicyTests", "ReplyCompletePlaceholderTests",
          "SessionRecapTests", "SubsessionReducerTests", "SubsessionRouterTests", "SubsessionTestSupport")

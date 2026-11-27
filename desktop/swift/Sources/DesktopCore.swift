@@ -8,6 +8,7 @@ private final class DesktopContext {
     var quota = ClaudeQuotaScheduler()
     var usage = ClaudeUsageScanner.FileCache()
     var sessions = DesktopSessions()
+    var cowork = CoworkAuditState()
 
     func copy() -> DesktopContext {
         let result = DesktopContext()
@@ -15,6 +16,7 @@ private final class DesktopContext {
         result.quota = quota
         result.usage = usage
         result.sessions = sessions
+        result.cowork = cowork
         return result
     }
 }
@@ -70,6 +72,16 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
     case "attention.intents", "attention.decide": return try attentionEvent(data, settle: op == "attention.decide")
     case "attention.settle": return try settleAttention(data)
     case "attention.hold": return try attentionHold(data)
+    case "cowork.audit":
+        guard let state else { throw BridgeError.missingContext }
+        return try coworkBatch(data, state: &state.cowork)
+    case "cowork.metadata": return try coworkMetadata(data)
+    case "cowork.id": return try encoder.encode(CoworkPaths.isValidSessionId(decoder.decode(String.self, from: data)))
+    case "cowork.link": return try encoder.encode(CoworkSessionPolicy.deepLinkURL(sessionId: decoder.decode(String.self, from: data))?.absoluteString)
+    case "cowork.trackable":
+        let fields = try decoder.decode(CoworkMetadataFields.self, from: data)
+        let metadata = CoworkSessionMetadata(sessionId: fields.id, isArchived: fields.archived, sessionType: fields.type)
+        return try encoder.encode(CoworkSessionPolicy.isTrackable(metadata))
     case "transcript.kind": return try classifyTranscript(data)
     case "session.checklist":
         guard let state else { throw BridgeError.missingContext }
@@ -260,6 +272,12 @@ private struct UsageReply: Encodable {
         today = scan.today
         hourlyOutputTokens = scan.hourlyOutputTokens
     }
+}
+
+private struct CoworkMetadataFields: Decodable {
+    let id: String
+    let archived: Bool
+    let type: String?
 }
 
 private struct TextLimit: Decodable { let text: String; let limit: Int }

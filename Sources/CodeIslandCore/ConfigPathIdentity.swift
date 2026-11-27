@@ -9,6 +9,15 @@ import Foundation
 /// Comparing spellings then gets "is this the primary's file?" wrong, which
 /// is how removing an extra directory could strip the primary's hooks.
 public enum ConfigPathIdentity {
+    /// Provider payloads may refer to a Windows machine even on a Unix host.
+    static func isWindowsAbsolute(_ path: String) -> Bool {
+        if path.hasPrefix(#"\\"#) { return true }
+        let bytes = path.utf8.prefix(3)
+        guard bytes.count == 3, let letter = bytes.first,
+              (65...90).contains(letter) || (97...122).contains(letter) else { return false }
+        return bytes.dropFirst().first == 58 && (bytes.last == 47 || bytes.last == 92)
+    }
+
     /// `path` with every symlink resolved and every existing component in its
     /// on-disk spelling — macOS `realpath(3)` also restores the stored case on
     /// a case-insensitive volume, which is the case normalization. A path

@@ -200,10 +200,11 @@ public struct CoworkSessionMetadata: Equatable, Sendable {
     /// (`/sessions/<vm-name>`) means nothing on the Mac, so the first folder the
     /// user granted wins; a host-loop session's real cwd is the fallback.
     public var hostCwd: String? {
-        if let folder = userSelectedFolders.first(where: { $0.hasPrefix("/") }) {
-            return folder
+        func absolute(_ path: String) -> Bool {
+            path.hasPrefix("/") || ConfigPathIdentity.isWindowsAbsolute(path)
         }
-        guard let cwd, cwd.hasPrefix("/"), !cwd.hasPrefix("/sessions/") else { return nil }
+        if let folder = userSelectedFolders.first(where: absolute) { return folder }
+        guard let cwd, absolute(cwd), !cwd.hasPrefix("/sessions/") else { return nil }
         return cwd
     }
 

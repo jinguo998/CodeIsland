@@ -402,7 +402,11 @@ public struct HookEvent {
 
     /// A hook from its payload already parsed (HookServer parses one once to
     /// route it under Agent Sub-Sessions).
-    public init?(json: [String: Any], cardSessionId: String? = nil) {
+    public init?(json: [String: Any]) {
+        self.init(json: json, cardSessionId: nil)
+    }
+
+    public init?(json: [String: Any], cardSessionId: String?) {
         guard let eventName = HookEvent.firstString(in: json, keys: ["hook_event_name", "hookEventName", "event_name", "eventName"]) else {
             return nil
         }
@@ -472,7 +476,7 @@ public struct HookEvent {
 
     private static func toolPathLeaf(_ path: String) -> String {
         // A local or SSH hook can report a drive or UNC path on any host.
-        let windowsPath = path.hasPrefix(#"\\"#) || path.dropFirst().hasPrefix(#":\"#)
+        let windowsPath = ConfigPathIdentity.isWindowsAbsolute(path)
         let normalized = windowsPath ? path.replacingOccurrences(of: #"\"#, with: "/") : path
         return (normalized as NSString).lastPathComponent
     }
