@@ -7,11 +7,26 @@ private final class DesktopContext {
     var reminders = FollowUpReminderScheduler()
     var quota = ClaudeQuotaScheduler()
     var usage = ClaudeUsageScanner.FileCache()
+    var sessions = DesktopSessions()
+
+    func copy() -> DesktopContext {
+        let result = DesktopContext()
+        result.reminders = reminders
+        result.quota = quota
+        result.usage = usage
+        result.sessions = sessions
+        return result
+    }
 }
 
 @_cdecl("codeisland_core_create_v1")
 public func coreCreate() -> UnsafeMutableRawPointer {
     Unmanaged.passRetained(DesktopContext()).toOpaque()
+}
+
+@_cdecl("codeisland_core_copy_v1")
+public func coreCopy(_ context: UnsafeMutableRawPointer) -> UnsafeMutableRawPointer {
+    Unmanaged.passRetained(Unmanaged<DesktopContext>.fromOpaque(context).takeUnretainedValue().copy()).toOpaque()
 }
 
 @_cdecl("codeisland_core_destroy_v1")
@@ -55,6 +70,19 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
     case "attention.intents", "attention.decide": return try attentionEvent(data, settle: op == "attention.decide")
     case "attention.settle": return try settleAttention(data)
     case "attention.hold": return try attentionHold(data)
+    case "transcript.kind": return try classifyTranscript(data)
+    case "session.checklist":
+        guard let state else { throw BridgeError.missingContext }
+        return try state.sessions.applyChecklist(data)
+    case "session.tier", "session.rank", "session.order", "session.idleGroups":
+        return try sessionList(op, data, state?.sessions.cards ?? [:])
+    case "session.reduce":
+        guard let state else { throw BridgeError.missingContext }
+        return try state.sessions.apply(data)
+    case "session.remove":
+        guard let state else { throw BridgeError.missingContext }
+        state.sessions.cards.removeValue(forKey: try decoder.decode(String.self, from: data))
+        return Data("null".utf8)
     case "toolStep":
         return try toolStep(data)
     case "cleanPushText":
@@ -250,5 +278,13 @@ func bridgeHook(_ data: Data) throws -> HookEvent? {
     if let tool = arguments["tool"] as? String { payload["tool_name"] = tool }
     if let id = arguments["tool_id"] as? String { payload["tool_use_id"] = id }
     if payload["_source"] == nil { payload["_source"] = arguments["source"] }
-    return HookEvent(json: payload)
+    if payload["cwd"] == nil, let cwd = arguments["cwd"] as? String { payload["cwd"] = cwd }
+    // For a real hook the Swift reducer reads the provider's original fields,
+    // including nested replies. Only synthetic desktop events need text hints.
+    if arguments["payload"] as? [String: Any] == nil {
+        payload["prompt"] = arguments["prompt"] as? String
+        payload["last_assistant_message"] = arguments["answer"] as? String
+    }
+    if let card = arguments["card"] as? String, payload["session_id"] == nil { payload["session_id"] = card }
+    return HookEvent(json: payload, cardSessionId: arguments["card"] as? String)
 }

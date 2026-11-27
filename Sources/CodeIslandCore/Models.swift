@@ -402,12 +402,12 @@ public struct HookEvent {
 
     /// A hook from its payload already parsed (HookServer parses one once to
     /// route it under Agent Sub-Sessions).
-    public init?(json: [String: Any]) {
+    public init?(json: [String: Any], cardSessionId: String? = nil) {
         guard let eventName = HookEvent.firstString(in: json, keys: ["hook_event_name", "hookEventName", "event_name", "eventName"]) else {
             return nil
         }
         self.eventName = eventName
-        self.sessionId = HookEvent.firstString(in: json, keys: ["session_id", "sessionId"])
+        self.sessionId = cardSessionId ?? HookEvent.firstString(in: json, keys: ["session_id", "sessionId"])
             .map { HookEvent.cardSessionId(forRawSessionId: $0, in: json) }
         self.toolName = HookEvent.firstString(in: json, keys: ["tool_name", "toolName", "tool", "name"])
             ?? HookEvent.firstString(inNestedDictionary: json, containerKeys: ["tool", "payload", "data"], keys: ["name", "tool_name", "toolName"])
@@ -515,7 +515,7 @@ public struct HookEvent {
                 }
             case "Grep", "search_files", "grep_search":
                 if let pattern = (input["Query"] ?? input["pattern"]) as? String {
-                    let path = ((input["SearchPath"] ?? input["path"]) as? String).map { " in \(($0 as NSString).lastPathComponent)" } ?? ""
+                    let path = ((input["SearchPath"] ?? input["path"]) as? String).map { " in \(Self.toolPathLeaf($0))" } ?? ""
                     return "\(pattern)\(path)"
                 }
             case "Glob":
@@ -698,7 +698,7 @@ public struct HookEvent {
     private static func sanitizedFilename(_ path: String) -> String? {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        return sanitizedSummary((trimmed as NSString).lastPathComponent, limit: 80)
+        return sanitizedSummary(Self.toolPathLeaf(trimmed), limit: 80)
     }
 
     /// Credential / home-path redactions applied by ``sanitizedSummary(_:limit:)``,

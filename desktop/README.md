@@ -1,6 +1,6 @@
 # CodeIsland Desktop
 
-CodeIsland's Windows shell uses Tauri 2 and React. The app and hook client load a native library built from the original files in `Sources/CodeIslandCore`. These files handle hook normalization, tool steps, attention decisions, reminders, Claude usage and quotas, and request formatting for the seven built-in push services. The Windows installers include the Swift runtime.
+CodeIsland's Windows shell uses Tauri 2 and React. The app and hook client load a native library built from the original files in `Sources/CodeIslandCore`. These files handle hook normalization and session transitions, task checklists, session ordering and cleanup, attention decisions, reminders, Claude usage and quotas, and request formatting for the seven built-in push services. The Windows installers include the Swift runtime.
 
 ## Prerequisites
 
@@ -8,7 +8,7 @@ CodeIsland's Windows shell uses Tauri 2 and React. The app and hook client load 
 - Node.js 20+ and npm
 - Swift 6.2.3 or later and Python 3 for native builds (`winget install --id Swift.Toolchain -e`)
 - Rust stable (`rustup default stable`) with the MSVC toolchain
-- Visual Studio Build Tools with the "Desktop development with C++" workload
+- Visual Studio 2022 Build Tools with the v143 C++ toolset and the Windows SDK
 - WebView2 runtime (present on current Windows; the Tauri docs have the
   evergreen bootstrapper)
 

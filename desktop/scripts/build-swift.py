@@ -15,7 +15,7 @@ CORE = (
     "CodexThreadSubsession", "CursorHookPayload", "CursorSessionFolding", "DeclaredSubsession",
     "EventSoundRouting", "SceneMuteState", "HermesHookPayload", "HermesSessionStore", "HostHarness", "JSONLTailer",
     "Models",
-    "PushChannel", "PushNotification", "PushPolicy", "SessionRecap", "SessionSnapshot",
+    "PushChannel", "PushNotification", "PushPolicy", "IdleSessionRemoval", "SessionListOrdering", "SessionRecap", "SessionSnapshot",
     "SubsessionLink", "SubsessionRouter", "WarpPaneResolver",
     "EventNormalizer", "FollowUpReminderScheduler", "RemoteReconnectPolicy",
 )
@@ -46,7 +46,7 @@ def main():
     parser.add_argument("--configuration", choices=("debug", "release"), default="debug")
     args = parser.parse_args()
     if args.action == "macos-test":
-        subprocess.run(["swift", "test", "--package-path", str(ROOT), "--filter", "|".join(TESTS)], check=True)
+        subprocess.run(["swift", "test", "--package-path", str(ROOT), "--filter", "|".join((*TESTS, "SessionListOrderingTests", "IdleSessionRemovalTests"))], check=True)
         return
     if args.scratch is None:
         parser.error("--scratch is required for a desktop build")

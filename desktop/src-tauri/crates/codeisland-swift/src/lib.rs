@@ -14,6 +14,7 @@ type Call = unsafe extern "C" fn(*mut c_void, *const c_char, *const u8, usize, W
 
 struct Api {
     create: Create,
+    copy: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     destroy: Destroy,
     call: Call,
     _library: Library,
@@ -23,12 +24,19 @@ static API: LazyLock<Api> = LazyLock::new(|| {
     let exe = std::env::current_exe().expect("get executable path");
     let dir = exe.parent().expect("executable directory");
     let filename = libloading::library_filename("CodeIslandDesktopCore");
-    let mut path = dir.join("swift-core").join(&filename);
-    // Cargo can put each test executable in its own build directory. An
-    // installed binary always uses its own bundled library and runtime.
-    if !path.is_file() && exe.starts_with(env!("CODEISLAND_CARGO_PROFILE_DIR")) {
-        path = std::path::Path::new(env!("CODEISLAND_BUILT_SWIFT_DIR")).join(&filename);
-    }
+    // A hook spawned by cargo test can sit next to an older staged bundle.
+    // Its Swift library is the one built with this executable. An installed
+    // program always resolves its private runtime beside itself.
+    let profile = std::path::Path::new(env!("CODEISLAND_CARGO_PROFILE_DIR"));
+    let cargo_binary = dir == profile || dir.strip_prefix(profile).ok()
+        .and_then(|path| path.components().next())
+        .and_then(|part| part.as_os_str().to_str())
+        .is_some_and(|part| matches!(part, "build" | "deps" | "examples" | "tests"));
+    let path = if cargo_binary {
+        std::path::Path::new(env!("CODEISLAND_BUILT_SWIFT_DIR")).join(&filename)
+    } else {
+        dir.join("swift-core").join(&filename)
+    };
     // Load the core from the application's directory, including its private
     // Swift runtime on Windows. Never search the current working directory.
     unsafe {
@@ -39,6 +47,7 @@ static API: LazyLock<Api> = LazyLock::new(|| {
         let library = loaded.unwrap_or_else(|error| panic!("load {}: {error}", path.display()));
         Api {
             create: *library.get(b"codeisland_core_create_v1").expect("Swift context constructor"),
+            copy: *library.get(b"codeisland_core_copy_v1").expect("Swift context copy"),
             destroy: *library.get(b"codeisland_core_destroy_v1").expect("Swift context destructor"),
             call: *library.get(b"codeisland_core_call_v1").expect("Swift call interface"),
             _library: library,
@@ -67,7 +76,9 @@ pub fn call<R: DeserializeOwned>(operation: &CStr, args: impl Serialize) -> R {
     invoke(std::ptr::null_mut(), operation, args)
 }
 
+#[derive(Debug)]
 pub struct Context(Mutex<Handle>);
+#[derive(Debug)]
 struct Handle(NonNull<c_void>);
 
 // The owner synchronizes all mutations. No Swift reference escapes the ABI.
@@ -76,6 +87,14 @@ unsafe impl Send for Handle {}
 impl Default for Context {
     fn default() -> Self {
         Context(Mutex::new(Handle(NonNull::new(unsafe { (API.create)() }).expect("Swift context"))))
+    }
+}
+
+impl Clone for Context {
+    fn clone(&self) -> Self {
+        let handle = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        let copy = unsafe { (API.copy)(handle.0.as_ptr()) };
+        Self(Mutex::new(Handle(NonNull::new(copy).expect("copy Swift context"))))
     }
 }
 

@@ -7,7 +7,7 @@ use indexmap::IndexMap;
 
 use crate::approval::{ApprovalAlwaysScope, agent_keeps_always_rule, command_for_event, commands_match};
 use crate::ordering;
-use crate::session_metadata::{TranscriptMetadata, apply_checklist, hook_checklist};
+use crate::session_metadata::{TranscriptMetadata, apply_transcript_checklist, apply_hook_checklist};
 use crate::settings::DEFAULT_MAX_HISTORY;
 use crate::types::*;
 
@@ -28,6 +28,7 @@ pub struct RequestResolution {
 
 #[derive(Debug, Clone)]
 pub struct SessionStore {
+    native: codeisland_swift::Context,
     sessions: IndexMap<String, SessionSnapshot>,
     pending: IndexMap<String, PendingRequest>,
     removed_idle: IndexMap<String, Arc<RemovedIdleGroup>>,
@@ -49,6 +50,7 @@ impl Default for SessionStore {
 impl SessionStore {
     pub fn new(max_visible: usize, history_limit: usize) -> Self {
         Self {
+            native: codeisland_swift::Context::default(),
             sessions: IndexMap::new(),
             pending: IndexMap::new(),
             removed_idle: IndexMap::new(),
@@ -213,7 +215,7 @@ impl SessionStore {
         }) else {
             return false;
         };
-        apply_transcript_metadata(session, event)
+        apply_transcript_metadata(&self.native, session, event)
     }
 
     /// Merge recovery without changing a newer hook/app-server state or
@@ -632,10 +634,20 @@ impl SessionStore {
             text: event.text.clone().or_else(|| event.tool.clone()),
         });
         trim_history(&mut snapshot.history, self.history_limit);
-        apply_transcript_metadata(snapshot, event);
-        apply_checklist(snapshot, hook_checklist(event), event.timestamp);
-
+        apply_transcript_metadata(&self.native, snapshot, event);
         let tool_use_id = event_tool_use_id(event);
+        let native = crate::swift_session::reduce(&self.native, snapshot, event,
+            tool_use_id.as_deref(), is_new_session, self.history_limit);
+        if let Some(reduction) = &native {
+            if reduction.removed || !reduction.applied {
+                let removed = reduction.removed;
+                if removed || is_new_session { self.remove_session_entry(&session_id); }
+                return ApplyOutcome { applied: removed, session_id, is_new_session: false,
+                    ended_turn: false, turn_failed: false, request: None };
+            }
+        } else {
+            apply_hook_checklist(&self.native, snapshot, event);
+        }
         let tool_input = event.payload.as_ref().and_then(|payload| {
             payload.get("tool_input").or_else(|| payload.get("toolInput"))
         });
@@ -731,7 +743,7 @@ impl SessionStore {
                 snapshot.tool_use_id = None;
             }
             AgentEventType::ToolStart => {
-                crate::hook_tool::apply(snapshot, event, tool_use_id.as_deref());
+                if native.is_none() { crate::hook_tool::apply(snapshot, event, tool_use_id.as_deref()); }
                 // A permission gate often arrives after the tool started with
                 // less detail; remember what we saw so the approval card can
                 // still name the tool and show its command.
@@ -743,7 +755,7 @@ impl SessionStore {
                 }
             }
             AgentEventType::ToolEnd => {
-                crate::hook_tool::apply(snapshot, event, tool_use_id.as_deref());
+                if native.is_none() { crate::hook_tool::apply(snapshot, event, tool_use_id.as_deref()); }
                 if let Some(id) = tool_use_id.as_deref() {
                     self.tool_uses
                         .remove(&tool_use_key(&event.session_id, id));
@@ -861,6 +873,11 @@ impl SessionStore {
                 self.pending.insert(pending.event_id.clone(), pending.clone());
                 request = Some(pending);
             }
+            // The Swift reducer owns wire-hook lifecycle transitions. Transcript
+            // recovery and desktop-only observers synthesize events without hooks.
+            AgentEventType::Message | AgentEventType::Error | AgentEventType::TurnEnd
+            | AgentEventType::TurnFailed | AgentEventType::Interrupt | AgentEventType::Notification
+            | AgentEventType::Heartbeat if native.is_some() => {}
             AgentEventType::Message => {
                 if snapshot.status != SessionStatus::Cancelled {
                     // The Codex rollout's task_started record changes the
@@ -945,7 +962,15 @@ impl SessionStore {
             AgentEventType::SessionEnd => {}
         }
 
-        if snapshot.status.needs_you()
+        let native_wait = native.as_ref().is_some_and(|_| event.event_type == AgentEventType::Notification && !had_wait);
+        if let Some(reduction) = native {
+            ended_turn = reduction.ended;
+            turn_failed = ended_turn && reduction.failed;
+            if turn_failed { snapshot.error = event.text.clone(); }
+            reduction.project(snapshot, event);
+        }
+
+        if snapshot.status.needs_you() && !native_wait
             && !matches!(event.event_type, AgentEventType::PermissionRequest | AgentEventType::Question)
         {
             snapshot.status = self
@@ -1159,6 +1184,7 @@ impl SessionStore {
 
     fn remove_session_entry(&mut self, session_id: &str) -> Option<SessionSnapshot> {
         let removed = self.sessions.shift_remove(session_id)?;
+        self.native.call::<()>(c"session.remove", session_id);
         self.pending.retain(|_, request| request.session_id != session_id);
         let tool_key = format!("{session_id}\u{1}");
         self.tool_uses.retain(|key, _| !key.starts_with(&tool_key));
@@ -1174,44 +1200,7 @@ impl SessionStore {
     /// The original idle removal policy evaluates connected families as a
     /// unit. A hidden request blocks removal just like a visible request.
     pub fn idle_session_removal_groups(&self) -> Vec<Vec<String>> {
-        let mut links: HashMap<&str, Vec<&str>> = self.sessions.keys()
-            .map(|id| (id.as_str(), Vec::new()))
-            .collect();
-        for (id, session) in &self.sessions {
-            if let Some(parent) = session.parent_session_id.as_deref()
-                && let Some(children) = links.get_mut(parent)
-            {
-                children.push(id);
-                links.get_mut(id.as_str()).expect("session adjacency").push(parent);
-            }
-        }
-        let blocked: HashSet<&str> = self.pending.values()
-            .map(|request| request.session_id.as_str())
-            .collect();
-        let mut visited = HashSet::new();
-        let mut groups = Vec::new();
-
-        for root in self.sessions.keys().map(String::as_str) {
-            if !visited.insert(root) {
-                continue;
-            }
-            let mut group = Vec::new();
-            let mut pending = vec![root];
-            let mut removable = true;
-            while let Some(id) = pending.pop() {
-                group.push(id);
-                let status = self.sessions[id].status;
-                // Swift represents the resting completion/error display as idle.
-                removable &= !status.is_active() && !status.needs_you() && !blocked.contains(id);
-                pending.extend(links[id].iter().copied().filter(|neighbor| visited.insert(*neighbor)));
-            }
-            if removable {
-                group.sort_unstable();
-                groups.push(group.into_iter().map(str::to_owned).collect());
-            }
-        }
-        groups.sort_unstable();
-        groups
+        ordering::idle_groups(&self.native, &self.sessions, &self.pending)
     }
 
     /// Revalidate the groups captured when the user opened confirmation.
@@ -1393,6 +1382,7 @@ impl SessionStore {
     }
 
     pub fn restore(&mut self, state: PersistedState) {
+        self.native = codeisland_swift::Context::default();
         self.sessions = state.sessions;
         self.manual_order = state
             .manual_order
@@ -1487,7 +1477,7 @@ fn trim_history(history: &mut Vec<HistoryEntry>, limit: usize) {
     }
 }
 
-fn apply_transcript_metadata(session: &mut SessionSnapshot, event: &AgentEvent) -> bool {
+fn apply_transcript_metadata(core: &codeisland_swift::Context, session: &mut SessionSnapshot, event: &AgentEvent) -> bool {
     match event.transcript_metadata.as_ref() {
         Some(TranscriptMetadata::Recap(recap))
             if session.agent == AgentKind::Claude
@@ -1499,8 +1489,8 @@ fn apply_transcript_metadata(session: &mut SessionSnapshot, event: &AgentEvent) 
             session.recap_created_at = Some(event.timestamp);
             changed
         }
-        Some(TranscriptMetadata::Checklist(updates)) => {
-            apply_checklist(session, updates.clone(), event.timestamp)
+        Some(TranscriptMetadata::Checklist(row)) => {
+            apply_transcript_checklist(core, session, row, event.timestamp)
         }
         _ => false,
     }
