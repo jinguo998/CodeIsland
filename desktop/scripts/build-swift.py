@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build the macOS core sources and their original tests for the native desktop host."""
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -13,7 +14,7 @@ CORE = (
     "ClaudeSessionRecord", "ClaudeConfigPaths", "ConfigPathIdentity", "ExtraConfigDirs", "ClaudeDesktopCodeSession", "ClaudeQuota", "ClaudeQuotaClient", "ClaudeQuotaScheduler", "ClaudeUsageScanner", "ModelLabel",
     "GitBranchReader", "ESP32Protocol", "AppleCompanionPayload", "AppleCompanionBluetooth", "AgentTaskList", "AgentTaskParsing", "AttentionPolicy", "BackgroundCompactionFilter",
     "SQLiteReader", "CodexStateStore", "CodexRollout", "CoworkSession", "CoworkAuditLog", "CodexAppServerProtocol", "CodexHooksConfig", "CodexPermissionRules", "CodexThreadSubsession", "CursorHookPayload", "CursorSessionFolding", "DeclaredSubsession",
-    "EventSoundRouting", "SceneMuteState", "HermesHookPayload", "HermesSessionStore", "HostHarness", "JSONLTailer",
+    "EventSoundRouting", "SoundVolumeCurve", "SceneMuteState", "HermesHookPayload", "HermesSessionStore", "HostHarness", "JSONLTailer",
     "Models",
     "PushTransport", "PushChannel", "PushNotification", "PushPolicy", "IdleSessionRemoval", "SessionListOrdering", "SessionRecap", "SessionSnapshot",
     "SubsessionLink", "SubsessionRouter", "WarpPaneResolver",
@@ -21,7 +22,7 @@ CORE = (
     "EventNormalizer", "FollowUpReminderScheduler", "RemoteReconnectPolicy",
 )
 APP_TESTS = ("SQLiteReaderClosedWALTests",)
-TESTS = ("SessionDiscoveryTests", "CodexAppServerProtocolTests", "GitBranchReaderTests", "CursorHookPayloadTests", "HookIntakeGoldenTests", "HookEdgeFactsTests", "BridgeGoldenHarness", "BridgeGoldenFixtures",
+TESTS = ("TurnFailureSoundTests", "SoundVolumeCurveTests", "SessionDiscoveryTests", "CodexAppServerProtocolTests", "GitBranchReaderTests", "CursorHookPayloadTests", "HookIntakeGoldenTests", "HookEdgeFactsTests", "BridgeGoldenHarness", "BridgeGoldenFixtures",
          "BridgeGoldenExpectations", "AntigravityHookContractTests", "GrokHookForwardingPolicyTests", "ESP32ProtocolTests", "AppleCompanionPayloadTests", "ClaudeQuotaTests", "ClaudeQuotaSchedulerTests", "FollowUpReminderSchedulerTests",
          "RemoteReconnectPolicyTests", "ClaudeUsageScannerTests", "ModelLabelTests",
          "CoworkSessionTests", "CoworkAuditLogTests", "AgentTaskListTests", "AttentionPolicyTests", "DerivedSessionStateTests",
@@ -42,12 +43,32 @@ def stage(sources, destination):
             stale.unlink()
 
 
+def sound_assets(check):
+    source = (ROOT / "Sources/CodeIslandCore/SoundVolumeCurve.swift").read_text(encoding="utf-8")
+    program = source + """
+let amplitudes = (0...100).map { SoundVolumeCurve.amplitude(forPercent: $0) }
+print(String(decoding: try JSONEncoder().encode(amplitudes), as: UTF8.self))
+"""
+    result = subprocess.run(["swift", "-"], input=program, text=True, capture_output=True, check=True)
+    asset = ROOT / "desktop/src/lib/soundVolume.json"
+    values = json.loads(result.stdout)
+    if check:
+        if json.loads(asset.read_text(encoding="utf-8")) != values:
+            raise SystemExit("Run python3 desktop/scripts/build-swift.py sound-assets after changing SoundVolumeCurve.")
+    else:
+        asset.write_text(json.dumps(values, separators=(",", ":")) + "\n", encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("build", "test", "macos-test"))
+    parser.add_argument("action", choices=("build", "test", "macos-test", "sound-assets"))
+    parser.add_argument("--check", action="store_true", help="verify generated sound assets")
     parser.add_argument("--scratch", type=Path)
     parser.add_argument("--configuration", choices=("debug", "release"), default="debug")
     args = parser.parse_args()
+    if args.action == "sound-assets":
+        sound_assets(args.check)
+        return
     if args.action == "macos-test":
         subprocess.run(["swift", "test", "--package-path", str(ROOT), "--filter", "|".join((*TESTS, *APP_TESTS, "SessionListOrderingTests", "IdleSessionRemovalTests", "CodexAppServerClientTests", "CodexAutoReviewRoutingTests", "ApprovalTrustBoundaryTests", "AppStateCodexTranscriptTests", "ClaudeSessionRecordPairingTests"))], check=True)
         return

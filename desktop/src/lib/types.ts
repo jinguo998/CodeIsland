@@ -345,6 +345,7 @@ export interface UiState {
   follow_up_hint_active?: boolean;
   follow_up_hint_pulse?: number;
   display_asleep?: boolean;
+  quiet_hours_active?: boolean;
   idle_session_removal_groups?: string[][];
   store: StoreSnapshot;
   settings: AppSettings;

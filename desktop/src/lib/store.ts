@@ -125,7 +125,7 @@ export const useIslandStore = create<IslandState>()((set, get) => ({
         const settings = get().ui?.settings;
         if (playEventSounds && settings) {
           // Sound-only events still play, and only the main island plays them.
-          playAttentionSound(event.decision.sound, settings, undefined, event.sessionId);
+          playAttentionSound(event.decision.sound, settings, undefined, get().ui?.quiet_hours_active);
         }
         const completion = event.decision.completion;
         const hasCard = Boolean(
@@ -152,7 +152,7 @@ export const useIslandStore = create<IslandState>()((set, get) => ({
     if (playEventSounds && get().ui?.settings) {
       void ipc.takeLaunchSound().then((shouldPlay) => {
         const settings = get().ui?.settings;
-        if (shouldPlay && settings) playAttentionSound("AppLaunch", settings);
+        if (shouldPlay && settings) playAttentionSound("AppLaunch", settings, undefined, get().ui?.quiet_hours_active);
       }).catch(() => {});
     }
     return () => {

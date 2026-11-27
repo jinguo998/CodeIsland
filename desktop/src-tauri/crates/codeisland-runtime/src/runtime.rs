@@ -50,6 +50,8 @@ pub struct UiState {
     pub follow_up_hint_pulse: u32,
     #[serde(default)]
     pub display_asleep: bool,
+    #[serde(default)]
+    pub quiet_hours_active: bool,
     pub idle_session_removal_groups: Vec<Vec<String>>,
 }
 
@@ -86,6 +88,7 @@ pub struct Runtime {
     shortcut_recording: AtomicBool,
     terminal_visibility: RwLock<Option<Arc<TerminalVisibilityDetector>>>,
     terminal_tab_visibility: RwLock<Option<Arc<TerminalVisibilityDetector>>>,
+    sound: codeisland_swift::Context,
     push: AsyncMutex<PushDelivery>,
     held_pushes: Mutex<HashMap<String, (AgentEvent, PushKind)>>,
     away: AtomicBool,
@@ -239,6 +242,7 @@ impl Runtime {
             shortcut_recording: AtomicBool::new(false),
             terminal_visibility: RwLock::new(None),
             terminal_tab_visibility: RwLock::new(None),
+            sound: codeisland_swift::Context::default(),
             push: AsyncMutex::new(PushDelivery::default()),
             held_pushes: Mutex::new(HashMap::new()),
             away: AtomicBool::new(false),
@@ -273,6 +277,7 @@ impl Runtime {
             follow_up_hint_active: island.follow_ups.hint_active(),
             follow_up_hint_pulse: island.follow_ups.hint_pulse,
             display_asleep: self.is_display_asleep(),
+            quiet_hours_active: island.settings.is_quiet_now(),
             idle_session_removal_groups: store.idle_session_removal_groups(),
         }
     }
@@ -898,7 +903,7 @@ impl Runtime {
             self.send_push(&event, push.kind, push.smart_suppressed, &settings);
         }
         if decision != AttentionDecision::default() {
-            let _ = self.updates.send(RuntimeUpdate::Attention { session_id, decision });
+            self.broadcast_attention(session_id, decision, Utc::now());
         }
         self.schedule_persist();
     }
@@ -1086,13 +1091,21 @@ impl Runtime {
             if let Some(push) = decision.push.clone() {
                 self.send_push(&event, push.kind, push.smart_suppressed, &settings);
             }
-            let _ = self.updates.send(RuntimeUpdate::Attention {
-                session_id: event.session_id.clone(),
-                decision,
-            });
+            self.broadcast_attention(event.session_id.clone(), decision, Utc::now());
         }
         self.schedule_persist();
         outcome
+    }
+
+    fn broadcast_attention(&self, session_id: String, mut decision: AttentionDecision, now: DateTime<Utc>) {
+        if decision.sound.as_deref() == Some(attention::CUE_TURN_FAILED)
+            && !self.sound.call::<bool>(c"sound.failure", serde_json::json!({ "id": session_id, "millis": now.timestamp_millis() }))
+        {
+            decision.sound = None;
+        }
+        if decision != AttentionDecision::default() {
+            let _ = self.updates.send(RuntimeUpdate::Attention { session_id, decision });
+        }
     }
 
     /// The frontend tells the runtime whether the active session's terminal is
@@ -1794,10 +1807,7 @@ impl Runtime {
                 ..AttentionIntents::default()
             }, &context);
             if decision.sound.is_some() {
-                let _ = self.updates.send(RuntimeUpdate::Attention {
-                    session_id: reminder.key.session_id,
-                    decision,
-                });
+                self.broadcast_attention(reminder.key.session_id, decision, now);
             }
         }
         if !remote.is_empty() {
@@ -2154,6 +2164,18 @@ pub(crate) mod tests {
         fn assert_send<T: Send>() {}
         assert_send_sync::<Arc<Runtime>>();
         assert_send::<RuntimeHandle>();
+    }
+
+    #[test]
+    fn failure_cues_wait_for_sixty_quiet_seconds_per_session() {
+        let runtime = runtime_with(AppSettings::default());
+        let mut updates = runtime.subscribe();
+        for (id, time, audible) in [("a", 0, true), ("a", 59, false), ("a", 60, false), ("b", 60, true), ("a", 120, true)] {
+            runtime.broadcast_attention(id.into(), AttentionDecision {
+                sound: Some(attention::CUE_TURN_FAILED.into()), ..AttentionDecision::default()
+            }, DateTime::from_timestamp(time, 0).unwrap());
+            assert_eq!(matches!(updates.try_recv(), Ok(RuntimeUpdate::Attention { .. })), audible);
+        }
     }
 
     #[test]

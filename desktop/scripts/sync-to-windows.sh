@@ -35,6 +35,10 @@ for shared_dir in Sources/CodeIslandCore Tests/CodeIslandCoreTests; do
   rsync -a "$SOURCE_DIR/../$shared_dir/" "$DESTINATION/../$shared_dir/"
 done
 
+mkdir -p "$DESTINATION/../Tests/CodeIslandTests"
+rsync -a "$SOURCE_DIR/../Tests/CodeIslandTests/SQLiteReaderClosedWALTests.swift" \
+  "$DESTINATION/../Tests/CodeIslandTests/"
+
 # The desktop and macOS builds embed the same remote hook and OpenCode plugin.
 REMOTE_HOOK_DIR="Sources/CodeIsland/Resources"
 mkdir -p "$DESTINATION/../$REMOTE_HOOK_DIR"

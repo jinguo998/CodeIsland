@@ -14,6 +14,17 @@ public enum EventSoundRouting {
     /// and AiWork's `stream.failed`. The name follows Claude Code's hook.
     public static let turnFailed = "StopFailure"
 
+    public static let turnFailureWindow: TimeInterval = 60
+
+    /// Quiet-hours window test. Half-open [start, end) in minutes since
+    /// midnight; start > end spans midnight; start == end never mutes (an
+    /// all-day window would just be the master sound toggle).
+    public static func isInQuietHours(minutesSinceMidnight m: Int, start: Int, end: Int) -> Bool {
+        guard start != end else { return false }
+        if start < end { return m >= start && m < end }
+        return m >= start || m < end
+    }
+
     /// The sound event for a hook, or nil when it should stay silent.
     ///
     /// Takes the raw wire name as well as the normalized one because

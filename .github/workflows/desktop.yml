@@ -9,13 +9,17 @@ on:
     paths:
       - "desktop/**"
       - "Sources/CodeIslandCore/**"
+      - "Sources/CodeIsland/**"
       - "Tests/CodeIslandCoreTests/**"
+      - "Tests/CodeIslandTests/**"
       - ".github/workflows/desktop.yml"
   pull_request:
     paths:
       - "desktop/**"
       - "Sources/CodeIslandCore/**"
+      - "Sources/CodeIsland/**"
       - "Tests/CodeIslandCoreTests/**"
+      - "Tests/CodeIslandTests/**"
       - ".github/workflows/desktop.yml"
   workflow_dispatch:
 
@@ -69,6 +73,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri -> target
+      - name: Check WebView volume values against the macOS Swift source
+        run: python3 ../scripts/build-swift.py sound-assets --check
       - name: Test original Swift core
         run: python3 ../scripts/build-swift.py test --scratch "${{ runner.temp }}/codeisland-swift-tests"
       - name: Test core crates
@@ -110,11 +116,11 @@ jobs:
         run: npm ci
       - name: Build frontend
         run: npm run build
+      - name: Test original Swift core on Windows
+        run: python scripts/build-swift.py test --scratch "$env:CODEISLAND_SWIFT_SCRATCH"
       - name: Prepare hook sidecars
         shell: pwsh
         run: ./scripts/prepare-sidecar.ps1
-      - name: Test original Swift core on Windows
-        run: python scripts/build-swift.py test --scratch "$env:CODEISLAND_SWIFT_SCRATCH"
       - name: Test workspace
         working-directory: desktop/src-tauri
         run: cargo test --workspace

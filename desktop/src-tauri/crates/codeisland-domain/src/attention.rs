@@ -224,14 +224,7 @@ pub fn in_quiet_hours(now: chrono::DateTime<chrono::Local>, start: &str, end: &s
         return false;
     };
     let minutes = now.time().hour() * 60 + now.time().minute();
-    if start == end {
-        return false;
-    }
-    if start < end {
-        minutes >= start && minutes < end
-    } else {
-        minutes >= start || minutes < end
-    }
+    codeisland_swift::call(c"sound.quiet", serde_json::json!({ "minute": minutes, "start": start, "end": end }))
 }
 
 fn parse_hhmm(value: &str) -> Option<u32> {

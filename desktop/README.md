@@ -64,7 +64,7 @@ The script runs `npm ci`, the frontend build and the Tauri build, copies the
 NSIS/MSI bundles into `desktop/artifacts/`, computes SHA256 hashes and writes
 `artifacts/release-manifest.json`.
 
-CI runs the original Swift tests on macOS, Linux and Windows, and exercises the Rust callers on Linux and Windows. It extracts the Windows NSIS installer and loads the packaged Swift library with only its bundled dependencies and system DLLs available. Release tags also build an MSI.
+CI runs the original Swift tests on macOS, Linux and Windows, and exercises the Rust callers on Linux and Windows. It extracts the Windows NSIS installer and loads the packaged Swift library with only its bundled dependencies and system DLLs available. Release tags also build an MSI. The WebView reads its 101 volume slider values from the original Swift sound curve. After changing the curve, run `python3 desktop/scripts/build-swift.py sound-assets` from the repository root.
 
 ## Tests
 

@@ -11,6 +11,7 @@ private final class DesktopContext {
     var cowork = CoworkAuditState()
     var cursor = CursorHookDeliveryFilter()
     var reconnect = RemoteReconnectPolicy()
+    var failureSounds = SoundDebouncer(window: EventSoundRouting.turnFailureWindow)
 
     func copy() -> DesktopContext {
         let result = DesktopContext()
@@ -21,6 +22,7 @@ private final class DesktopContext {
         result.cowork = cowork
         result.cursor = cursor
         result.reconnect = reconnect
+        result.failureSounds = failureSounds
         return result
     }
 }
@@ -97,6 +99,15 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
     case "truncatePushText":
         let args = try decoder.decode(TextLimit.self, from: data)
         return try encoder.encode(PushMessageFormatter.truncated(args.text, limit: args.limit))
+    case "sound.quiet":
+        struct Clock: Decodable { let minute: Int; let start: Int; let end: Int }
+        let clock = try decoder.decode(Clock.self, from: data)
+        return try encoder.encode(EventSoundRouting.isInQuietHours(minutesSinceMidnight: clock.minute, start: clock.start, end: clock.end))
+    case "sound.failure":
+        struct Hit: Decodable { let id: String; let millis: Int64 }
+        guard let state else { throw BridgeError.missingContext }
+        let hit = try decoder.decode(Hit.self, from: data)
+        return try encoder.encode(state.failureSounds.shouldPlay(key: hit.id, now: Date(timeIntervalSince1970: Double(hit.millis) / 1000)))
     case "attention.intents", "attention.decide": return try attentionEvent(data, settle: op == "attention.decide")
     case "attention.settle": return try settleAttention(data)
     case "attention.hold": return try attentionHold(data)

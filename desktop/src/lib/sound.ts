@@ -1,5 +1,6 @@
 import type { AudibleCue } from "./defaults";
 import { readCustomSound } from "./ipc";
+import soundVolume from "./soundVolume.json";
 import type { AppSettings, SoundFileName } from "./types";
 
 type CueName = "approval" | "completion" | "error" | "start" | "submit" | "boot";
@@ -45,8 +46,6 @@ const AUDIO_MIME_TYPES: Readonly<Partial<Record<string, string>>> = {
 export function soundFileName(cue: AudibleCue): SoundFileName {
   return SOUND_FILES[CUE_FOR_SOUND[cue]];
 }
-const lastFailureBySession = new Map<string, number>();
-const FAILURE_QUIET_MS = 60_000;
 
 /** `"22:00"` → 1320 minutes since midnight. */
 export function parseClock(value: string): number | null {
@@ -81,6 +80,7 @@ export function shouldPlaySound(
     "sound_enabled" | "quiet_hours_enabled" | "quiet_hours_start" | "quiet_hours_end" | "mute_when_away"
   >,
   now: Date = new Date(),
+  quietHoursActive?: boolean,
 ): boolean {
   if (!settings.sound_enabled) return false;
   // Native cues already passed the runtime's Windows away check. The
@@ -96,17 +96,16 @@ export function shouldPlaySound(
   }
   if (
     settings.quiet_hours_enabled &&
-    inQuietHours(settings.quiet_hours_start, settings.quiet_hours_end, now)
+    (quietHoursActive ?? inQuietHours(settings.quiet_hours_start, settings.quiet_hours_end, now))
   ) {
     return false;
   }
   return true;
 }
 
-/** The macOS slider is quadratic through 25% and linear above it. */
+/** The WebView uses the 101 slider values exported by the Swift SoundVolumeCurve. */
 export function soundAmplitude(percent: number): number {
-  const clamped = Math.min(100, Math.max(0, percent));
-  return clamped < 25 ? 0.25 * (clamped / 25) ** 2 : clamped / 100;
+  return soundVolume[Math.min(100, Math.max(0, Math.round(percent)))] ?? 0;
 }
 
 function startAudio(audio: HTMLAudioElement, volume: number): Promise<void> {
@@ -209,28 +208,17 @@ export async function previewSound(cue: AudibleCue, volumePercent: number, custo
   }
 }
 
-function shouldPlayFailure(sessionId: string, now: number): boolean {
-  const previous = lastFailureBySession.get(sessionId);
-  for (const [id, time] of lastFailureBySession) {
-    if (now - time >= FAILURE_QUIET_MS) lastFailureBySession.delete(id);
-  }
-  // Every failure extends the quiet window, even if that failure is silent.
-  lastFailureBySession.set(sessionId, now);
-  return previous === undefined || now - previous >= FAILURE_QUIET_MS;
-}
-
 /** Applies the current sound settings and queues the decided event cue. */
 export function playAttentionSound(
   sound: string | null | undefined,
   settings: AppSettings,
   now: Date = new Date(),
-  sessionId = "",
+  quietHoursActive?: boolean,
 ): boolean {
-  if (!sound || !shouldPlaySound(settings, now)) return false;
+  if (!sound || !shouldPlaySound(settings, now, quietHoursActive)) return false;
   const preference = sound === "TaskRoundComplete" ? "Stop" : sound;
   if (!settings.audible_cues.includes(sound) && !settings.audible_cues.includes(preference)) return false;
   if (!Object.prototype.hasOwnProperty.call(CUE_FOR_SOUND, sound)) return false;
   const cue = CUE_FOR_SOUND[sound as keyof typeof CUE_FOR_SOUND];
-  if (sound === "StopFailure" && !shouldPlayFailure(sessionId, now.getTime())) return false;
   return playCue(cue, settings.sound_volume, settings.custom_sound_paths?.[SOUND_FILES[cue]]);
 }
