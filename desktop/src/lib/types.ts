@@ -128,6 +128,7 @@ export interface SessionSnapshot {
   claude_desktop_session_id?: string | null;
   tool_use_id?: string | null;
   model?: string | null;
+  model_label?: string;
   reasoning?: string | null;
   recap?: string | null;
   error?: string | null;
