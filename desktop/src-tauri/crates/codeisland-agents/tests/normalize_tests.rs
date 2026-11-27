@@ -219,6 +219,20 @@ fn missing_session_id_falls_back_to_the_parent_pid() {
 }
 
 #[test]
+fn declared_and_routed_child_cards_use_the_native_parent() {
+    for (fields, expected) in [
+        (r#""_parent_session_id":"parent""#, Some("parent")),
+        (r#""_parent_session_id":"child""#, None),
+        (r#""_parent_session_id":"parent","_subsession_parent":"folded""#, Some("folded")),
+        (r#""_parent_session_id":"parent","_remote_host_id":"server""#, Some("parent")),
+    ] {
+        let raw = format!(r#"{{"session_id":"child",{fields}}}"#);
+        let event = normalize("pi", "SessionStart", &raw, None).unwrap();
+        assert_eq!(event.parent_session_id.as_deref(), expected);
+    }
+}
+
+#[test]
 fn subagent_events_get_a_child_session_id() {
     let raw = r#"{
         "hook_event_name": "SubagentStart",

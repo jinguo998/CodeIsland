@@ -46,12 +46,24 @@ pub(crate) fn reduce(
     core: &codeisland_swift::Context, session: &SessionSnapshot, event: &AgentEvent,
     tool_id: Option<&str>, fresh: bool, limit: usize,
 ) -> Option<Reduction> {
-    // Watchers, app-server consent and custom CLI adapters also publish
-    // desktop-only messages. Hook events carry their provider's wire name.
-    let raw = event.raw_event_name.as_deref()?;
     if event.event_type.is_blocking() || matches!(event.event_type, AgentEventType::SubagentStart | AgentEventType::SubagentEnd) {
         return None;
     }
+    // A watcher can supply the same lifecycle transition without a hook name.
+    // Transcript message fragments and OS heartbeats have no such transition.
+    let raw = if let Some(name) = event.raw_event_name.as_deref() { name } else {
+        match event.event_type {
+            AgentEventType::ToolStart | AgentEventType::ToolEnd
+                if session.status == SessionStatus::Cancelled || session.status.needs_you() => return None,
+            AgentEventType::UserPrompt => "UserPromptSubmit",
+            AgentEventType::ToolStart => "PreToolUse",
+            AgentEventType::ToolEnd => "PostToolUse",
+            AgentEventType::Interrupt => "Interrupt",
+            AgentEventType::TurnEnd | AgentEventType::TurnFailed if event.is_interrupted_turn() => "Interrupt",
+            AgentEventType::TurnEnd => "Stop",
+            _ => return None,
+        }
+    };
     core.call(c"session.reduce", json!({
         "event": raw, "source": event.agent, "card": event.session_id, "fresh": fresh,
         "payload": event.payload, "cwd": event.cwd, "tool": event.tool, "tool_id": tool_id,

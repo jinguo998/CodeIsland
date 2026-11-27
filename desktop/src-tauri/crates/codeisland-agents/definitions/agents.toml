@@ -7,9 +7,7 @@
 #           opencode_plugin | generic_json | toml_block | yaml_block |
 #           plugin_js | manual
 # response: claude | codex | gemini | cursor | notification | plain
-# timeout_ms is the hook's own budget. Installers convert it to seconds for
-# agents that use seconds (Claude, Codex, Cursor) and leave it in ms for
-# Gemini and Qwen Code. blocking = true means the agent waits for a decision.
+# Hook names and timeouts come from the original ConfigInstaller.
 
 # ── Claude Code ──────────────────────────────────────────────────────────────
 [[agents]]
@@ -22,21 +20,6 @@ format = "claude_json"
 response = "claude"
 icon = "claude"
 docs = "https://docs.anthropic.com/en/docs/claude-code/hooks"
-events = [
-  { name = "SessionStart", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "PostToolUseFailure", timeout_ms = 5000 },
-  { name = "PermissionRequest", timeout_ms = 86400000, blocking = true },
-  { name = "Notification", timeout_ms = 86400000 },
-  { name = "Stop", timeout_ms = 5000 },
-  { name = "StopFailure", timeout_ms = 5000 },
-  { name = "SessionEnd", timeout_ms = 5000 },
-  { name = "PreCompact", timeout_ms = 5000 },
-  { name = "SubagentStart", timeout_ms = 5000 },
-  { name = "SubagentStop", timeout_ms = 5000 },
-]
 
 # ── Codex ────────────────────────────────────────────────────────────────────
 [[agents]]
@@ -49,20 +32,6 @@ format = "event_map_json"
 response = "codex"
 icon = "codex"
 docs = "https://developers.openai.com/codex/hooks"
-events = [
-  { name = "SessionStart", timeout_ms = 5000 },
-  { name = "SessionEnd", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "PermissionRequest", timeout_ms = 86400000, blocking = true },
-  { name = "Stop", timeout_ms = 5000 },
-  { name = "Interrupt", timeout_ms = 3000 },
-  { name = "PreCompact", timeout_ms = 5000 },
-  { name = "PostCompact", timeout_ms = 5000 },
-  { name = "SubagentStart", timeout_ms = 5000 },
-  { name = "SubagentStop", timeout_ms = 5000 },
-]
 
 # ── Gemini CLI ───────────────────────────────────────────────────────────────
 [[agents]]
@@ -75,14 +44,6 @@ format = "event_map_json"
 response = "gemini"
 icon = "gemini"
 docs = "https://github.com/google-gemini/gemini-cli"
-events = [
-  { name = "SessionStart", timeout_ms = 10000 },
-  { name = "SessionEnd", timeout_ms = 10000 },
-  { name = "BeforeTool", timeout_ms = 86400000, blocking = true },
-  { name = "AfterTool", timeout_ms = 10000 },
-  { name = "BeforeAgent", timeout_ms = 10000 },
-  { name = "AfterAgent", timeout_ms = 10000 },
-]
 
 # ── Cursor ───────────────────────────────────────────────────────────────────
 [[agents]]
@@ -95,18 +56,6 @@ format = "cursor_json"
 response = "cursor"
 icon = "cursor"
 docs = "https://docs.cursor.com/context/hooks"
-events = [
-  { name = "beforeSubmitPrompt", timeout_ms = 5000 },
-  { name = "beforeShellExecution", timeout_ms = 5000 },
-  { name = "beforeMCPExecution", timeout_ms = 5000 },
-  { name = "beforeReadFile", timeout_ms = 5000 },
-  { name = "afterShellExecution", timeout_ms = 5000 },
-  { name = "afterFileEdit", timeout_ms = 5000 },
-  { name = "afterMCPExecution", timeout_ms = 5000 },
-  { name = "afterAgentThought", timeout_ms = 5000 },
-  { name = "afterAgentResponse", timeout_ms = 5000 },
-  { name = "stop", timeout_ms = 5000 },
-]
 
 # ── OpenCode ─────────────────────────────────────────────────────────────────
 [[agents]]
@@ -119,7 +68,6 @@ format = "opencode_plugin"
 response = "claude"
 icon = "opencode"
 docs = "https://opencode.ai/docs/plugins/"
-events = []
 
 # ── Qoder ────────────────────────────────────────────────────────────────────
 [[agents]]
@@ -131,19 +79,6 @@ config = [".qoder/settings.json"]
 format = "claude_json"
 response = "claude"
 icon = "qoder"
-events = [
-  { name = "SessionStart", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "PermissionRequest", timeout_ms = 86400000, blocking = true },
-  { name = "Notification", timeout_ms = 86400000 },
-  { name = "Stop", timeout_ms = 5000 },
-  { name = "SessionEnd", timeout_ms = 5000 },
-  { name = "PreCompact", timeout_ms = 5000 },
-  { name = "SubagentStart", timeout_ms = 5000 },
-  { name = "SubagentStop", timeout_ms = 5000 },
-]
 
 # ── Factory Droid ────────────────────────────────────────────────────────────
 [[agents]]
@@ -155,17 +90,6 @@ config = [".factory/settings.json"]
 format = "claude_json"
 response = "claude"
 icon = "factory"
-events = [
-  { name = "SessionStart", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "PermissionRequest", timeout_ms = 86400000, blocking = true },
-  { name = "Notification", timeout_ms = 86400000 },
-  { name = "Stop", timeout_ms = 5000 },
-  { name = "SessionEnd", timeout_ms = 5000 },
-  { name = "PreCompact", timeout_ms = 5000 },
-]
 
 # ── CodeBuddy ────────────────────────────────────────────────────────────────
 [[agents]]
@@ -177,16 +101,6 @@ config = [".codebuddy/settings.json"]
 format = "claude_json"
 response = "claude"
 icon = "codebuddy"
-events = [
-  { name = "SessionStart", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "PermissionRequest", timeout_ms = 86400000, blocking = true },
-  { name = "Notification", timeout_ms = 86400000 },
-  { name = "Stop", timeout_ms = 5000 },
-  { name = "SessionEnd", timeout_ms = 5000 },
-]
 
 # ── GitHub Copilot CLI ───────────────────────────────────────────────────────
 [[agents]]
@@ -198,14 +112,6 @@ config = [".copilot/hooks/codeisland.json"]
 format = "copilot_json"
 response = "plain"
 icon = "copilot"
-events = [
-  { name = "sessionStart", timeout_ms = 5000 },
-  { name = "sessionEnd", timeout_ms = 5000 },
-  { name = "userPromptSubmitted", timeout_ms = 5000 },
-  { name = "preToolUse", timeout_ms = 5000 },
-  { name = "postToolUse", timeout_ms = 5000 },
-  { name = "errorOccurred", timeout_ms = 5000 },
-]
 
 # ── Grok CLI ─────────────────────────────────────────────────────────────────
 [[agents]]
@@ -217,22 +123,6 @@ config = [".grok/hooks/codeisland.json"]
 format = "event_map_json"
 response = "plain"
 icon = "grok"
-events = [
-  { name = "SessionStart", timeout_ms = 5000 },
-  { name = "SessionEnd", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "PostToolUseFailure", timeout_ms = 5000 },
-  { name = "PermissionDenied", timeout_ms = 5000 },
-  { name = "Stop", timeout_ms = 5000 },
-  { name = "StopFailure", timeout_ms = 5000 },
-  { name = "Notification", timeout_ms = 5000 },
-  { name = "SubagentStart", timeout_ms = 5000 },
-  { name = "SubagentStop", timeout_ms = 5000 },
-  { name = "PreCompact", timeout_ms = 5000 },
-  { name = "PostCompact", timeout_ms = 5000 },
-]
 
 # ── Kimi Code CLI ────────────────────────────────────────────────────────────
 [[agents]]
@@ -244,19 +134,6 @@ config = [".kimi-code/config.toml", ".kimi/config.toml"]
 format = "toml_block"
 response = "plain"
 icon = "kimi"
-events = [
-  { name = "SessionStart", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "PostToolUseFailure", timeout_ms = 5000 },
-  { name = "Notification", timeout_ms = 600000 },
-  { name = "Stop", timeout_ms = 5000 },
-  { name = "SessionEnd", timeout_ms = 5000 },
-  { name = "PreCompact", timeout_ms = 5000 },
-  { name = "SubagentStart", timeout_ms = 5000 },
-  { name = "SubagentStop", timeout_ms = 5000 },
-]
 
 # ── Cline ────────────────────────────────────────────────────────────────────
 [[agents]]
@@ -268,15 +145,6 @@ config = ["Documents/Cline/Hooks", ".cline/hooks.json"]
 format = "manual"
 response = "plain"
 icon = "cline"
-events = [
-  { name = "TaskStart", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "TaskComplete", timeout_ms = 5000 },
-  { name = "TaskCancel", timeout_ms = 5000 },
-  { name = "PreCompact", timeout_ms = 5000 },
-]
 
 # ── Pi ───────────────────────────────────────────────────────────────────────
 [[agents]]
@@ -288,7 +156,6 @@ config = [".pi/agent/extensions/codeisland.ts"]
 format = "plugin_js"
 response = "claude"
 icon = "pi"
-events = []
 
 # ── Oh My Pi (OMP) ───────────────────────────────────────────────────────────
 # Same extension contract as Pi, loaded from ~/.omp/agent/extensions. It maps
@@ -302,7 +169,6 @@ config = [".omp/agent/extensions/codeisland.ts"]
 format = "plugin_js"
 response = "claude"
 icon = "pi"
-events = []
 
 # ── Qwen Code ────────────────────────────────────────────────────────────────
 [[agents]]
@@ -314,20 +180,6 @@ config = [".qwen/settings.json"]
 format = "claude_json"
 response = "claude"
 icon = "qwen"
-events = [
-  { name = "SessionStart", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "PostToolUseFailure", timeout_ms = 5000 },
-  { name = "PermissionRequest", timeout_ms = 86400000, blocking = true },
-  { name = "Notification", timeout_ms = 86400000 },
-  { name = "Stop", timeout_ms = 5000 },
-  { name = "SessionEnd", timeout_ms = 5000 },
-  { name = "PreCompact", timeout_ms = 5000 },
-  { name = "SubagentStart", timeout_ms = 5000 },
-  { name = "SubagentStop", timeout_ms = 5000 },
-]
 
 # ── Hermes ───────────────────────────────────────────────────────────────────
 [[agents]]
@@ -339,16 +191,6 @@ config = [".hermes/config.yaml", ".config/hermes/config.yaml"]
 format = "yaml_block"
 response = "plain"
 icon = "hermes"
-events = [
-  { name = "pre_tool_call", timeout_ms = 5000 },
-  { name = "post_tool_call", timeout_ms = 5000 },
-  { name = "pre_llm_call", timeout_ms = 5000 },
-  { name = "post_llm_call", timeout_ms = 5000 },
-  { name = "on_session_start", timeout_ms = 5000 },
-  { name = "on_session_end", timeout_ms = 5000 },
-  { name = "on_session_finalize", timeout_ms = 5000 },
-  { name = "subagent_stop", timeout_ms = 5000 },
-]
 
 # ── AntiGravity (Claude Code fork) ───────────────────────────────────────────
 [[agents]]
@@ -360,18 +202,6 @@ config = [".antigravity/settings.json"]
 format = "claude_json"
 response = "plain"
 icon = "antigravity"
-events = [
-  { name = "SessionStart", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "PostToolUseFailure", timeout_ms = 5000 },
-  { name = "PermissionRequest", timeout_ms = 86400000, blocking = true },
-  { name = "Notification", timeout_ms = 86400000 },
-  { name = "Stop", timeout_ms = 5000 },
-  { name = "SessionEnd", timeout_ms = 5000 },
-  { name = "PreCompact", timeout_ms = 5000 },
-]
 
 # ── Google Antigravity (Gemini-based IDE/CLI) ────────────────────────────────
 # A separate product from the Claude fork above: it reads a standalone
@@ -384,13 +214,8 @@ source = "google-antigravity"
 executables = ["agy"]
 config = [".gemini/config/hooks.json"]
 format = "generic_json"
-response = "plain"
+response = "gemini"
 icon = "antigravity"
-events = [
-  { name = "PreToolUse", timeout_ms = 30000 },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "Stop", timeout_ms = 5000 },
-]
 
 # ── Kiro ─────────────────────────────────────────────────────────────────────
 [[agents]]
@@ -402,13 +227,6 @@ config = [".kiro/agents/codeisland.json"]
 format = "generic_json"
 response = "plain"
 icon = "kiro"
-events = [
-  { name = "agentSpawn", timeout_ms = 5000 },
-  { name = "userPromptSubmit", timeout_ms = 5000 },
-  { name = "preToolUse", timeout_ms = 5000 },
-  { name = "postToolUse", timeout_ms = 5000 },
-  { name = "stop", timeout_ms = 5000 },
-]
 
 # ── StepFun ──────────────────────────────────────────────────────────────────
 [[agents]]
@@ -420,16 +238,6 @@ config = [".stepfun/settings.json"]
 format = "claude_json"
 response = "claude"
 icon = "stepfun"
-events = [
-  { name = "SessionStart", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "PermissionRequest", timeout_ms = 86400000, blocking = true },
-  { name = "Notification", timeout_ms = 86400000 },
-  { name = "Stop", timeout_ms = 5000 },
-  { name = "SessionEnd", timeout_ms = 5000 },
-]
 
 # ── WorkBuddy ────────────────────────────────────────────────────────────────
 [[agents]]
@@ -441,16 +249,6 @@ config = [".workbuddy/settings.json"]
 format = "claude_json"
 response = "claude"
 icon = "workbuddy"
-events = [
-  { name = "SessionStart", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "PermissionRequest", timeout_ms = 86400000, blocking = true },
-  { name = "Notification", timeout_ms = 86400000 },
-  { name = "Stop", timeout_ms = 5000 },
-  { name = "SessionEnd", timeout_ms = 5000 },
-]
 
 # ── OpenClaw ─────────────────────────────────────────────────────────────────
 [[agents]]
@@ -462,7 +260,6 @@ config = [".openclaw/codeisland-plugin/index.ts"]
 format = "plugin_js"
 response = "claude"
 icon = "openclaw"
-events = []
 
 # ── ZCode ────────────────────────────────────────────────────────────────────
 [[agents]]
@@ -474,15 +271,6 @@ config = [".zcode/cli/config.json"]
 format = "generic_json"
 response = "claude"
 icon = "zcode"
-events = [
-  { name = "SessionStart", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PermissionRequest", timeout_ms = 86400000, blocking = true },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "PostToolUseFailure", timeout_ms = 5000 },
-  { name = "Stop", timeout_ms = 5000 },
-]
 
 # ── MiniMax Code CLI ─────────────────────────────────────────────────────────
 [[agents]]
@@ -494,19 +282,6 @@ config = [".minimax/plugins/codeisland/hooks/hooks.json"]
 format = "claude_json"
 response = "claude"
 icon = "minimax"
-events = [
-  { name = "SessionStart", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PermissionRequest", timeout_ms = 10000, blocking = true },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "SubagentStart", timeout_ms = 5000 },
-  { name = "SubagentStop", timeout_ms = 5000 },
-  { name = "Stop", timeout_ms = 5000 },
-  { name = "PreCompact", timeout_ms = 5000 },
-  { name = "PostCompact", timeout_ms = 5000 },
-  { name = "SessionEnd", timeout_ms = 5000 },
-]
 
 # ── DeepSeek Harness ─────────────────────────────────────────────────────────
 [[agents]]
@@ -518,7 +293,6 @@ config = [".dsh"]
 format = "manual"
 response = "plain"
 icon = "deepseek"
-events = []
 
 # ── AiWork ───────────────────────────────────────────────────────────────────
 [[agents]]
@@ -530,7 +304,6 @@ config = [".agentix/run/coder/agent.sock"]
 format = "manual"
 response = "plain"
 icon = "aiwork"
-events = []
 
 # ── AiWork CLI ───────────────────────────────────────────────────────────────
 # The CLI surface of AiWork (legacy `dtcoder`) shares the AiWork kind. It has
@@ -544,7 +317,6 @@ config = [".agentix/run/coder/agent.sock"]
 format = "manual"
 response = "plain"
 icon = "aiwork"
-events = []
 
 # ── MiMo ─────────────────────────────────────────────────────────────────────
 [[agents]]
@@ -556,7 +328,6 @@ config = [".config/mimocode/plugins/codeisland.js"]
 format = "plugin_js"
 response = "claude"
 icon = "mimo"
-events = []
 
 # ── Trae ─────────────────────────────────────────────────────────────────────
 [[agents]]
@@ -568,14 +339,6 @@ config = [".trae/hooks.json"]
 format = "generic_json"
 response = "plain"
 icon = "trae"
-events = [
-  { name = "SessionStart", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "Stop", timeout_ms = 5000 },
-  { name = "Notification", timeout_ms = 5000 },
-]
 
 # ── Trae CN ──────────────────────────────────────────────────────────────────
 [[agents]]
@@ -587,14 +350,6 @@ config = [".trae-cn/hooks.json"]
 format = "generic_json"
 response = "plain"
 icon = "traecn"
-events = [
-  { name = "SessionStart", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "Stop", timeout_ms = 5000 },
-  { name = "Notification", timeout_ms = 5000 },
-]
 
 # ── Trae CLI ─────────────────────────────────────────────────────────────────
 [[agents]]
@@ -606,21 +361,6 @@ config = [".trae/traecli.yaml"]
 format = "yaml_block"
 response = "plain"
 icon = "traecli"
-events = [
-  { name = "session_start", timeout_ms = 5000 },
-  { name = "session_end", timeout_ms = 5000 },
-  { name = "user_prompt_submit", timeout_ms = 5000 },
-  { name = "pre_tool_use", timeout_ms = 5000 },
-  { name = "post_tool_use", timeout_ms = 5000 },
-  { name = "post_tool_use_failure", timeout_ms = 5000 },
-  { name = "permission_request", timeout_ms = 86400000, blocking = true },
-  { name = "notification", timeout_ms = 86400000 },
-  { name = "subagent_start", timeout_ms = 5000 },
-  { name = "subagent_stop", timeout_ms = 5000 },
-  { name = "stop", timeout_ms = 5000 },
-  { name = "pre_compact", timeout_ms = 5000 },
-  { name = "post_compact", timeout_ms = 5000 },
-]
 
 # ── Trae CLI Next ────────────────────────────────────────────────────────────
 # Trae CLI Next moved its hooks to ~/.trae/cli/hooks.json and uses the
@@ -635,21 +375,6 @@ config = [".trae/cli/hooks.json"]
 format = "event_map_json"
 response = "plain"
 icon = "traecli"
-events = [
-  { name = "SessionStart", timeout_ms = 5000 },
-  { name = "SessionEnd", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "PostToolUseFailure", timeout_ms = 5000 },
-  { name = "PermissionRequest", timeout_ms = 86400000, blocking = true },
-  { name = "Notification", timeout_ms = 86400000 },
-  { name = "SubagentStart", timeout_ms = 5000 },
-  { name = "SubagentStop", timeout_ms = 5000 },
-  { name = "Stop", timeout_ms = 5000 },
-  { name = "PreCompact", timeout_ms = 5000 },
-  { name = "PostCompact", timeout_ms = 5000 },
-]
 
 # ── CodyBuddyCN ──────────────────────────────────────────────────────────────
 [[agents]]
@@ -661,16 +386,6 @@ config = [".codybuddycn/settings.json"]
 format = "claude_json"
 response = "claude"
 icon = "codybuddycn"
-events = [
-  { name = "SessionStart", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "PermissionRequest", timeout_ms = 86400000, blocking = true },
-  { name = "Notification", timeout_ms = 86400000 },
-  { name = "Stop", timeout_ms = 5000 },
-  { name = "SessionEnd", timeout_ms = 5000 },
-]
 
 # ── Qoder CN ─────────────────────────────────────────────────────────────────
 [[agents]]
@@ -682,16 +397,6 @@ config = [".qoder-cn/settings.json"]
 format = "claude_json"
 response = "claude"
 icon = "qodercn"
-events = [
-  { name = "SessionStart", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "PermissionRequest", timeout_ms = 86400000, blocking = true },
-  { name = "Notification", timeout_ms = 86400000 },
-  { name = "Stop", timeout_ms = 5000 },
-  { name = "SessionEnd", timeout_ms = 5000 },
-]
 
 # ── QoderWork ────────────────────────────────────────────────────────────────
 [[agents]]
@@ -703,13 +408,3 @@ config = [".qoderwork/settings.json"]
 format = "claude_json"
 response = "claude"
 icon = "qoderwork"
-events = [
-  { name = "SessionStart", timeout_ms = 5000 },
-  { name = "UserPromptSubmit", timeout_ms = 5000 },
-  { name = "PreToolUse", timeout_ms = 5000 },
-  { name = "PostToolUse", timeout_ms = 5000 },
-  { name = "PermissionRequest", timeout_ms = 86400000, blocking = true },
-  { name = "Notification", timeout_ms = 86400000 },
-  { name = "Stop", timeout_ms = 5000 },
-  { name = "SessionEnd", timeout_ms = 5000 },
-]

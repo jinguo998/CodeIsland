@@ -6,8 +6,6 @@ use ts_rs::TS;
 
 use crate::attention::CompletionStyle;
 
-const NOTCH_ANIMATION_SPEED_MIN: f64 = 0.5;
-const NOTCH_ANIMATION_SPEED_MAX: f64 = 2.0;
 const NOTCH_ANIMATION_SPEED_NORMAL: f64 = 1.0;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -391,11 +389,7 @@ impl AppSettings {
 }
 
 fn clamp_notch_animation_speed(speed: f64) -> f64 {
-    if speed.is_finite() {
-        speed.clamp(NOTCH_ANIMATION_SPEED_MIN, NOTCH_ANIMATION_SPEED_MAX)
-    } else {
-        NOTCH_ANIMATION_SPEED_NORMAL
-    }
+    codeisland_swift::call(c"desktop.animation", speed.is_finite().then_some(speed))
 }
 
 fn deserialize_notch_animation_speed<'de, D: Deserializer<'de>>(

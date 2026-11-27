@@ -37,6 +37,8 @@ func prepareHook(_ operation: String, _ data: Data) throws -> Data {
         fileExists: { FileManager.default.fileExists(atPath: $0) })
     guard var intake = HookIntake(stdin: input, facts: facts) else { return Data("null".utf8) }
     intake.addTerminalContext()
+    if cursor, !intake.waitsForAnswer, let event = HookEvent(json: intake.payload),
+       HookServer.routeKind(for: event) != .event { return Data("null".utf8) }
     var result: [String: Any] = ["payload": intake.payload, "source": intake.source ?? args.source,
         "fallback": intake.sessionIdIsFallback, "waits": intake.waitsForAnswer, "cursor": cursor,
         "delay": intake.deliveryDelay]

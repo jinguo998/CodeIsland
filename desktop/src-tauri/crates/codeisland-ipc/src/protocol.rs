@@ -30,6 +30,15 @@ pub enum ClientMessage {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
+    /// Original Swift HookIntake payload plus named-pipe correlation and timeout.
+    /// Older clients continue to send the projected Event variant.
+    Hook {
+        v: u32,
+        id: String,
+        payload: serde_json::Value,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
     Heartbeat {
         v: u32,
         id: String,

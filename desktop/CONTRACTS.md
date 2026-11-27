@@ -1,8 +1,10 @@
 # CodeIsland Desktop — 内部接口契约
 
-所有 crate 必须遵守本文件的公开 API。domain 类型见 `src-tauri/crates/codeisland-domain/src/types.rs`。
+所有 crate 必须遵守本文件的公开 API。domain 类型见 `src-tauri/crates/codeisland-domain/src/types.rs`。各 Rust 文件使用的原版 Swift 实现见 [逐文件对照](RUST_SWIFT_AUDIT.md)。
 
 ## codeisland-ipc
+
+当前 hook 将原始提供方事件放入 `Hook.payload`。接收端调用 Swift 的 `HookServer.intake`，用管道或 SSH 连接确定事件来源。`Event` 兼容旧客户端。只有旧服务端明确拒绝未知的 `hook` 类型时，新客户端才用同一请求 ID 重发一次。超时或连接中断不会重发审批。
 
 ```rust
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -17,6 +19,7 @@ pub enum ClientMessage {
         #[serde(default)] waits: bool,
         #[serde(default)] timeout_ms: Option<u64>,
     },
+    Hook { v: u32, id: String, payload: serde_json::Value, #[serde(default)] timeout_ms: Option<u64> },
     Heartbeat { v: u32, id: String },
 }
 

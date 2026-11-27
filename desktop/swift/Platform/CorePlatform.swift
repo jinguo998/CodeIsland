@@ -1,5 +1,20 @@
 import Foundation
 
+// The desktop keeps custom agent settings in its JSON store. Scope a snapshot
+// to the current call so independent hooks never share mutable preferences.
+public enum DesktopSourcePreferences {
+    @TaskLocal public static var customCLIs: Data?
+    static let standard = Preferences()
+    struct Preferences {
+        func data(forKey key: String) -> Data? {
+            key == SessionSnapshot.customCLIConfigsKey ? DesktopSourcePreferences.customCLIs : nil
+        }
+    }
+}
+
+extension SessionSnapshot {
+    typealias UserDefaults = DesktopSourcePreferences
+}
 #if os(Windows)
 public typealias pid_t = Int32
 
@@ -144,4 +159,13 @@ public func fillMissingParentMetadataFromSubagentEvent(
 ) {
     NativeHookMetadata().fillMissingParentMetadataFromSubagentEvent(into: &sessions, sessionId: sessionId,
                                                                      event: NativeHookMetadata.withVolume(event))
+}
+
+import CryptoKit
+
+public enum DesktopLANDigest {
+    public static func bytes(_ message: [UInt8], key: [UInt8]?) -> [UInt8] {
+        if let key { return Array(HMAC<SHA256>.authenticationCode(for: Data(message), using: SymmetricKey(data: key))) }
+        return Array(SHA256.hash(data: message))
+    }
 }

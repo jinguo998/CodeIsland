@@ -83,11 +83,7 @@ fn codex_desktop_thread_link(session: &SessionSnapshot) -> Option<String> {
     // Older snapshots recovered from a rollout only carried the namespaced
     // card ID. Its suffix is the provider thread ID for those snapshots.
     let thread_id = session.provider_session_id.as_deref().unwrap_or(card_id);
-    let parsed = uuid::Uuid::parse_str(thread_id).ok()?;
-    if !thread_id.eq_ignore_ascii_case(&parsed.hyphenated().to_string()) {
-        return None;
-    }
-    Some(format!("codex://threads/{thread_id}"))
+    codeisland_swift::call(c"desktop.codexLink", thread_id)
 }
 
 fn launchers(agent: AgentKind, cwd: &str) -> Vec<Launch> {

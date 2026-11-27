@@ -110,6 +110,16 @@ impl AgentKind {
         }
     }
 
+    /// The original hook's source when a legacy desktop message only has an enum.
+    pub fn hook_source(self) -> &'static str {
+        match self {
+            Self::Qoder => "qoder-cli",
+            Self::QoderCn => "qoderclicn",
+            Self::DeepSeek => "dsh",
+            _ => self.tag(),
+        }
+    }
+
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Claude => "Claude Code",
@@ -154,7 +164,7 @@ impl AgentKind {
             "gemini" | "gemini-cli" => Self::Gemini,
             "cursor" | "cursor-cli" => Self::Cursor,
             "opencode" => Self::OpenCode,
-            "qoder" => Self::Qoder,
+            "qoder" | "qoder-cli" => Self::Qoder,
             "droid" | "factory" => Self::Factory,
             "codebuddy" => Self::CodeBuddy,
             "copilot" => Self::Copilot,
@@ -532,13 +542,7 @@ pub fn project_name(cwd: Option<&str>) -> Option<String> {
     if cwd.is_empty() {
         return None;
     }
-    let trimmed = cwd.trim_end_matches(['\\', '/']);
-    trimmed
-        .rsplit(['\\', '/'])
-        .next()
-        .filter(|value| !value.is_empty() && !value.ends_with(':'))
-        .map(ToOwned::to_owned)
-        .or_else(|| Some(trimmed.to_owned()))
+    Some(codeisland_swift::call(c"session.project", cwd))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -572,6 +576,10 @@ pub struct PendingRequest {
     #[serde(default)]
     pub agent: AgentKind,
     pub kind: RequestKind,
+    /// The provider owning a permission rule can be more specific than the UI agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(skip)]
+    pub hook_source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

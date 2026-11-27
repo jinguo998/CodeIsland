@@ -19,16 +19,18 @@ fn make_decision(agent: AgentKind, action: UserAction, text: Option<&str>) -> De
     }
 }
 
+fn assert_json(actual: &str, expected: &str) {
+    let parse = |text: &str| serde_json::from_str::<serde_json::Value>(text).expect("valid decision JSON");
+    assert_eq!(parse(actual), parse(expected));
+}
+
 #[test]
 fn claude_approve() {
     let event = make_event(AgentKind::Claude, AgentEventType::PermissionRequest, Some("Bash"));
     let decision = make_decision(AgentKind::Claude, UserAction::Approve, None);
     let (stdout, code) = render_response(AgentKind::Claude, &event, Some(&decision), "{}");
     assert_eq!(code, 0);
-    assert_eq!(
-        stdout,
-        r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}"#
-    );
+    assert_json(&stdout, r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}"#);
 }
 
 #[test]
@@ -37,10 +39,7 @@ fn claude_deny() {
     let decision = make_decision(AgentKind::Claude, UserAction::Deny, None);
     let (stdout, code) = render_response(AgentKind::Claude, &event, Some(&decision), "{}");
     assert_eq!(code, 0);
-    assert_eq!(
-        stdout,
-        r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}"#
-    );
+    assert_json(&stdout, r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}"#);
 }
 
 #[test]
@@ -49,10 +48,7 @@ fn claude_always_allow_adds_a_session_rule() {
     let decision = make_decision(AgentKind::Claude, UserAction::AlwaysAllow, None);
     let (stdout, code) = render_response(AgentKind::Claude, &event, Some(&decision), "{}");
     assert_eq!(code, 0);
-    assert_eq!(
-        stdout,
-        r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedPermissions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"*"}],"behavior":"allow","destination":"session"}]}}}"#
-    );
+    assert_json(&stdout, r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedPermissions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"*"}],"behavior":"allow","destination":"session"}]}}}"#);
 }
 
 #[test]
@@ -64,10 +60,7 @@ fn claude_always_allow_mcp_uses_bare_tool_name() {
     );
     let decision = make_decision(AgentKind::Claude, UserAction::AlwaysAllow, None);
     let (stdout, _) = render_response(AgentKind::Claude, &event, Some(&decision), "{}");
-    assert_eq!(
-        stdout,
-        r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedPermissions":[{"type":"addRules","rules":[{"toolName":"mcp__server__tool"}],"behavior":"allow","destination":"session"}]}}}"#
-    );
+    assert_json(&stdout, r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedPermissions":[{"type":"addRules","rules":[{"toolName":"mcp__server__tool"}],"behavior":"allow","destination":"session"}]}}}"#);
 }
 
 #[test]
@@ -85,10 +78,7 @@ fn claude_question_answer_copies_tool_input() {
     let decision = make_decision(AgentKind::Claude, UserAction::Answer, Some("Postgres"));
     let (stdout, code) = render_response(AgentKind::Claude, &event, Some(&decision), "{}");
     assert_eq!(code, 0);
-    assert_eq!(
-        stdout,
-        r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedInput":{"questions":[{"question":"Which database?","options":[{"label":"Postgres"},{"label":"SQLite"}]}],"answers":{"Which database?":"Postgres"},"answer":"Postgres"}}}}"#
-    );
+    assert_json(&stdout, r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedInput":{"questions":[{"question":"Which database?","options":[{"label":"Postgres"},{"label":"SQLite"}]}],"answers":{"Which database?":"Postgres"},"answer":"Postgres"}}}}"#);
 }
 
 #[test]
@@ -99,10 +89,7 @@ fn claude_notification_question_uses_notification_schema() {
     let decision = make_decision(AgentKind::Claude, UserAction::Answer, Some("SQLite"));
     let (stdout, code) = render_response(AgentKind::Claude, &event, Some(&decision), "{}");
     assert_eq!(code, 0);
-    assert_eq!(
-        stdout,
-        r#"{"hookSpecificOutput":{"hookEventName":"Notification","answer":"SQLite"}}"#
-    );
+    assert_json(&stdout, r#"{"hookSpecificOutput":{"hookEventName":"Notification","answer":"SQLite"}}"#);
 }
 
 #[test]
@@ -111,10 +98,7 @@ fn claude_question_deny_becomes_permission_deny() {
     event.payload = Some(json!({"tool_input": {"questions": []}}));
     let decision = make_decision(AgentKind::Claude, UserAction::Deny, None);
     let (stdout, _) = render_response(AgentKind::Claude, &event, Some(&decision), "{}");
-    assert_eq!(
-        stdout,
-        r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}"#
-    );
+    assert_json(&stdout, r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}"#);
 }
 
 #[test]
@@ -197,7 +181,7 @@ fn unknown_agent_falls_back_but_still_renders_json() {
     let event = make_event(AgentKind::Unknown, AgentEventType::PermissionRequest, Some("Bash"));
     let decision = make_decision(AgentKind::Unknown, UserAction::Approve, None);
     let (stdout, _) = render_response(AgentKind::Unknown, &event, Some(&decision), "{}");
-    assert_eq!(stdout, r#"{"decision":"allow"}"#);
+    assert_json(&stdout, r#"{"decision":"allow"}"#);
 }
 
 #[test]

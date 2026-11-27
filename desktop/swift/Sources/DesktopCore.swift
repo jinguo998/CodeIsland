@@ -83,6 +83,7 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
         return try reconnectOperation(operation, data, policy: &state.reconnect, unknown: &state.reachabilityUnknown)
     case "codex.enableHooks":
         return try encoder.encode(CodexHooksConfig.enablingHooks(in: decoder.decode(String.self, from: data)))
+    case let operation where operation.hasPrefix("install."): return try installerOperation(operation, data)
     case "codex.prefixes", "codex.matches", "codex.scope", "codex.persist":
         return try codexRule(op, data)
     case "hook.seenCursor":
@@ -93,10 +94,39 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
         return try encoder.encode(state.cursor.isRepeat(digest: delivery.digest, now: date))
     case "tool.fields", "tool.sameInput", "tool.keepsRequest", "tool.hasPassed": return try permissionToolCall(op, data)
     case "hook.admit", "hook.prepare": return try prepareHook(op, data)
+    case "lan.digest":
+        struct Digest: Decodable { let key: [UInt8]?; let message: [UInt8] }
+        let args = try decoder.decode(Digest.self, from: data)
+        return try encoder.encode(DesktopLANDigest.bytes(args.message, key: args.key))
+    case "desktop.animation":
+        return try encoder.encode(NotchAnimationSpeed.clamped((try decoder.decode(Double?.self, from: data)) ?? NotchAnimationSpeed.normal))
+    case "desktop.diagnostics":
+        return try JSONSerialization.data(withJSONObject: DiagnosticsRedaction.redact(
+            try JSONSerialization.jsonObject(with: data)), options: [.withoutEscapingSlashes, .sortedKeys])
+    case "desktop.codexLink":
+        var session = SessionSnapshot()
+        session.source = "codex"
+        session.termBundleId = AppState.codexAppBundleId
+        session.providerSessionId = try decoder.decode(String.self, from: data)
+        return try encoder.encode(AppState.codexDesktopThreadLink(for: session)?.absoluteString)
+    case "session.revives":
+        guard let event = try bridgeHook(data) else { return try encoder.encode(false) }
+        return try encoder.encode(RemovedSessionRevivalEvidence.forHookEvent(event,
+            normalizedEventName: EventNormalizer.normalize(event.eventName)) != .passive)
+    case "desktop.cardShortcut": return try DesktopCardShortcut.route(data)
+    case "tray.mask": return try encoder.encode(DesktopTrayDrawing.mask())
+    case "session.project":
+        var session = SessionSnapshot()
+        session.cwd = try DesktopPath.withForwardSlashes(decoder.decode(String.self, from: data))
+        return try encoder.encode(session.displayName)
+    case "hook.receive", "hook.fields", "hook.localOrigin", "hook.policy", "hook.remoteFilter",
+         "hook.webhook", "hook.answer", "hook.keepsRule", "hook.source":
+        return try desktopHookOperation(op, data)
     case "git.branch":
         let cwd = try decoder.decode(String.self, from: data)
         return try encoder.encode(GitBranchReader.desktopBranch(cwd: cwd))
     case "companion.frames": return try companionFrames(data)
+    case "companion.state": return try DesktopCompanion.state(data)
     case let operation where operation.hasPrefix("buddy."): return try buddy(operation, data)
     case "pushEndpoint":
         let endpoint = PushEndpoint.parse(try decoder.decode(String.self, from: data))

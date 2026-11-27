@@ -14,8 +14,15 @@ pub enum ApprovalAlwaysScope {
 
 /// These hooks apply the supplied rule themselves. An exception they still
 /// forward after that (such as a protected path) needs a fresh decision.
+pub fn source_keeps_always_rule(source: &str) -> bool {
+    codeisland_swift::call(c"hook.keepsRule", serde_json::json!({
+        "event": "PermissionRequest", "source": source,
+    }))
+}
+
+/// Older desktop messages identify the provider only by its desktop enum.
 pub fn agent_keeps_always_rule(agent: AgentKind) -> bool {
-    matches!(agent, AgentKind::Claude | AgentKind::Qoder | AgentKind::QoderCn | AgentKind::MiniMax)
+    source_keeps_always_rule(agent.hook_source())
 }
 
 pub fn command_for_event(event: &AgentEvent) -> Option<&str> {
@@ -47,6 +54,13 @@ pub fn commands_match(script: &str, patterns: &[Vec<String>]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qoder_cli_and_ide_handle_persistent_rules_differently() {
+        assert!(!source_keeps_always_rule("qoder"));
+        assert!(source_keeps_always_rule("qoder-cli"));
+        assert!(agent_keeps_always_rule(AgentKind::Qoder));
+    }
 
     #[test]
     fn only_plain_commands_and_every_member_match() {

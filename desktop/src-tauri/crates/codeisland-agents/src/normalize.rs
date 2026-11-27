@@ -40,7 +40,7 @@ pub fn normalize_with_ppid(
         serde_json::from_str(raw)?
     };
 
-    Ok(project_event(source, event_name, payload, cwd_hint, ppid_hint))
+    Ok(project_event(source, event_name, payload, cwd_hint, ppid_hint, None))
 }
 
 #[derive(Deserialize)]
@@ -55,27 +55,21 @@ pub fn local_hook_admission(source: &str, event: &str) -> HookAdmission {
     }))
 }
 
+#[derive(Deserialize)]
 pub struct LocalHook {
-    pub event: AgentEvent,
+    pub payload: Value,
+    pub source: String,
     pub immediate: Option<String>,
-    pub delay: std::time::Duration,
+    pub waits: bool,
     pub cursor: bool,
+    pub delay: f64,
+    fallback: bool,
 }
 
-/// Run in the hook process so Swift sees the firing agent's environment and
-/// the original stdin bytes. Socket clients already carry their own context.
+/// Swift reads the firing process's environment and original stdin before the
+/// named pipe crosses into the desktop process.
 pub fn prepare_local_hook(source: &str, tag: &str, raw: &str, cwd: Option<&str>, ppid: u32) -> Result<Option<LocalHook>, AgentError> {
-    #[derive(Deserialize)]
-    struct Prepared {
-        source: String,
-        payload: Value,
-        fallback: bool,
-        immediate: Option<String>,
-        waits: bool,
-        cursor: bool,
-        delay: f64,
-    }
-    let Some(mut hook) = codeisland_swift::call::<Option<Prepared>>(c"hook.prepare", json!({
+    let Some(mut hook) = codeisland_swift::call::<Option<LocalHook>>(c"hook.prepare", json!({
         "source": source.trim_start_matches("codeisland-"), "event": tag, "raw": raw, "cwd": cwd,
         "parent": i32::try_from(ppid).ok(),
     })) else {
@@ -83,20 +77,38 @@ pub fn prepare_local_hook(source: &str, tag: &str, raw: &str, cwd: Option<&str>,
         return Ok(None);
     };
     if hook.fallback {
-        // Windows plugins also send IDs in fields outside the upstream hook schema.
-        if let Some(id) = serde_json::from_str(raw).ok().as_ref().and_then(pick_session_id) {
+        // Legacy desktop extensions also use numeric or nested provider IDs.
+        if let Some(id) = serde_json::from_str(raw).ok().as_ref().and_then(pick_legacy_session_id) {
             hook.payload["session_id"] = Value::String(id);
         }
     }
-    let mut event = project_event(&hook.source, tag, hook.payload, cwd, Some(ppid));
-    if hook.cursor && !hook.waits && event.event_type.is_blocking() { return Ok(None); }
-    event.waits = hook.waits || (!hook.cursor && event.event_type.is_blocking());
-    Ok(Some(LocalHook { event, immediate: hook.immediate, delay: std::time::Duration::from_secs_f64(hook.delay),
-        cursor: hook.cursor }))
+    Ok(Some(hook))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookFields {
+    pub route: String,
+    tool: Option<String>,
+    agent_id: Option<String>,
+    session: Option<String>,
+    parent: Option<String>,
+    transcript: Option<String>,
+    question: Option<String>,
+    options: Option<Vec<String>>,
+    items: Vec<Value>,
+}
+
+pub fn project_received(source: &str, name: &str, payload: Value, fields: HookFields) -> AgentEvent {
+    project_event(source, name, payload, None, None, Some(fields))
+}
+
+pub fn project_wire(source: &str, name: &str, payload: Value) -> AgentEvent {
+    project_event(source, name, payload, None, None, None)
 }
 
 fn project_event(
-    source: &str, event_name: &str, mut payload: Value, cwd_hint: Option<&str>, ppid_hint: Option<u32>,
+    source: &str, event_name: &str, mut payload: Value, cwd_hint: Option<&str>, ppid_hint: Option<u32>, received: Option<HookFields>,
 ) -> AgentEvent {
     let agent = kind_for_source(source);
 
@@ -111,27 +123,26 @@ fn project_event(
         .map(str::to_owned)
         .unwrap_or_else(|| event_name.to_owned());
 
-    let mut tool = pick_tool(&payload);
-    let question_event = is_question(tool.as_deref(), &payload);
-    let mut event_type = if question_event {
-        AgentEventType::Question
-    } else {
-        map_event_type(event_name, &wire_event)
+    let authoritative = received.is_some();
+    let fields = received.unwrap_or_else(|| codeisland_swift::call(c"hook.fields", json!({
+        "source": source.trim_start_matches("codeisland-"), "event": wire_event, "payload": payload,
+    })));
+    // Compatibility extensions also allow a nested tool_use as the only tool name.
+    let mut tool = fields.tool.or_else(|| pick_pointer_str(&payload, "/tool_use/name"))
+        .or_else(|| pick_pointer_str(&payload, "/toolUse/name"));
+    let mut event_type = match fields.route.as_str() {
+        "permission" => AgentEventType::PermissionRequest,
+        "question" => AgentEventType::Question,
+        _ if !authoritative && fields.question.is_some() => AgentEventType::Question,
+        _ => map_event_type(event_name, &wire_event),
     };
 
-    let agent_id = pick_str(&payload, &["agent_id", "agentId"]);
-    let parent_from_payload = pick_str(
-        &payload,
-        &[
-            "parent_session_id",
-            "parentSessionId",
-            "parent_id",
-            "parentId",
-            "_parent_session_id",
-        ],
-    );
+    let agent_id = fields.agent_id;
+    let parent_from_payload = fields.parent.or_else(|| {
+        pick_str(&payload, &["parent_session_id", "parentSessionId", "parent_id", "parentId"])
+    });
     let ppid = pick_ppid(&payload).or(ppid_hint);
-    let mut session_id = pick_session_id(&payload)
+    let mut session_id = fields.session.or_else(|| pick_legacy_session_id(&payload))
         .unwrap_or_else(|| session_fallback(&agent, source, ppid));
     let mut parent_session_id = parent_from_payload.clone();
 
@@ -167,12 +178,12 @@ fn project_event(
     event.raw_event_name = Some(wire_event);
     event.cwd = pick_cwd(&payload).or_else(|| cwd_hint.map(str::to_owned));
     event.tool = tool;
-    event.text = pick_text(&payload).or_else(|| question_text(&payload));
-    event.title = pick_title(&payload).or_else(|| question_text(&payload));
+    event.text = pick_text(&payload).or_else(|| fields.question.clone());
+    event.title = pick_title(&payload).or(fields.question);
     event.model = pick_str(&payload, &["model", "model_name", "modelName"])
         .or_else(|| pick_pointer_str(&payload, "/extra/model"));
     event.pid = pick_pid(&payload);
-    event.transcript_path = pick_str(&payload, &["transcript_path", "transcriptPath"])
+    event.transcript_path = fields.transcript.or_else(|| pick_str(&payload, &["transcriptPath"]))
         .or_else(|| pick_pointer_str(&payload, "/extra/transcript_path"));
     event.terminal_kind = pick_str(
         &payload,
@@ -213,9 +224,11 @@ fn project_event(
     // Expose the parsed options where the runtime/UI can read them without
     // having to know each agent's nested `tool_input` shape.
     if event.event_type == AgentEventType::Question {
-        let options = question_options(&payload);
-        if !options.is_empty() {
-            if let Some(object) = payload.as_object_mut() {
+        if let Some(object) = payload.as_object_mut() {
+            if !fields.items.is_empty() {
+                object.entry("questions").or_insert_with(|| Value::Array(fields.items));
+            }
+            if let Some(options) = fields.options {
                 object.entry("options").or_insert_with(|| json!(options));
             }
         }
@@ -318,88 +331,7 @@ fn best_effort(name: &str) -> Option<AgentEventType> {
     }
 }
 
-fn is_question(tool: Option<&str>, payload: &Value) -> bool {
-    if let Some(tool) = tool {
-        let tool = tool.to_ascii_lowercase();
-        if tool == "askuserquestion" || tool == "ask_user_question" {
-            return true;
-        }
-    }
-    for pointer in ["/tool_input/questions", "/toolInput/questions"] {
-        if let Some(questions) = payload.pointer(pointer).and_then(Value::as_array) {
-            if !questions.is_empty() {
-                return true;
-            }
-        }
-    }
-    // Claude's Notification question carries a top-level `question` string.
-    // Do not use a "?" heuristic: ordinary status text often ends in one and
-    // must not stall the hook.
-    payload
-        .get("question")
-        .and_then(Value::as_str)
-        .is_some_and(|text| !text.trim().is_empty())
-}
-
-fn question_text(payload: &Value) -> Option<String> {
-    for pointer in [
-        "/tool_input/questions/0/question",
-        "/toolInput/questions/0/question",
-        "/tool_input/question",
-        "/toolInput/question",
-    ] {
-        if let Some(text) = payload.pointer(pointer).and_then(Value::as_str) {
-            let text = text.trim();
-            if !text.is_empty() {
-                return Some(text.to_owned());
-            }
-        }
-    }
-    payload
-        .get("question")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(str::to_owned)
-}
-
-fn question_options(payload: &Value) -> Vec<String> {
-    let mut options = Vec::new();
-    for pointer in ["/tool_input/questions", "/toolInput/questions"] {
-        let Some(questions) = payload.pointer(pointer).and_then(Value::as_array) else {
-            continue;
-        };
-        for question in questions {
-            let Some(choices) = question.get("options").and_then(Value::as_array) else {
-                continue;
-            };
-            for choice in choices {
-                if let Some(label) = choice.get("label").and_then(Value::as_str) {
-                    options.push(label.to_owned());
-                } else if let Some(label) = choice.as_str() {
-                    options.push(label.to_owned());
-                }
-            }
-        }
-    }
-    if options.is_empty() {
-        for pointer in ["/tool_input/options", "/toolInput/options", "/options"] {
-            let Some(choices) = payload.pointer(pointer).and_then(Value::as_array) else {
-                continue;
-            };
-            for choice in choices {
-                if let Some(label) = choice.get("label").and_then(Value::as_str) {
-                    options.push(label.to_owned());
-                } else if let Some(label) = choice.as_str() {
-                    options.push(label.to_owned());
-                }
-            }
-        }
-    }
-    options
-}
-
-fn pick_session_id(payload: &Value) -> Option<String> {
+fn pick_legacy_session_id(payload: &Value) -> Option<String> {
     for key in [
         "session_id",
         "sessionId",
@@ -445,26 +377,6 @@ fn pick_cwd(payload: &Value) -> Option<String> {
     )
     .or_else(|| pick_pointer_str(payload, "/extra/cwd"))
     .or_else(|| pick_pointer_str(payload, "/extra/working_directory"))
-}
-
-fn pick_tool(payload: &Value) -> Option<String> {
-    if let Some(tool) = pick_str(payload, &["tool_name", "toolName"]) {
-        return Some(tool);
-    }
-    if let Some(tool) = payload.get("tool") {
-        if let Some(name) = tool.as_str() {
-            if !name.trim().is_empty() {
-                return Some(name.trim().to_owned());
-            }
-        }
-        if let Some(name) = tool.get("name").and_then(Value::as_str) {
-            if !name.trim().is_empty() {
-                return Some(name.trim().to_owned());
-            }
-        }
-    }
-    pick_pointer_str(payload, "/tool_use/name")
-        .or_else(|| pick_pointer_str(payload, "/toolUse/name"))
 }
 
 fn pick_text(payload: &Value) -> Option<String> {

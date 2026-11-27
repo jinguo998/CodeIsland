@@ -19,13 +19,15 @@ CORE = (
     "CoworkSession", "CoworkAuditLog", "CodexHooksConfig", "CodexThreadSubsession", "CursorHookPayload",
     "CursorSessionFolding", "DeclaredSubsession", "DisplayOnlyWait", "EventSoundRouting", "SoundVolumeCurve", "SceneMuteState",
     "HermesHookPayload", "HermesSessionStore", "HostHarness", "Models", "PushNotification", "PushPolicy", "SessionRecap",
+    "ChatMessageTextFormatter", "MarkdownBlockParser", "MarkdownInlineLiterals", "MarkdownPreviewText", "TextRenderCache",
     "SubsessionLink", "SubsessionRouter", "WarpPaneResolver", "HookIntake", "HookEdgeFacts",
     "AntigravityHookContract", "GrokHookForwardingPolicy", "GrokSessionPaths", "EventNormalizer",
     "FollowUpReminderScheduler", "RemoteReconnectPolicy",
 )
 TESTS = (
+    "ChatMessageTextFormatterTests", "MarkdownBlockParserTests", "MarkdownInlineLiteralsTests", "MarkdownPreviewTextTests",
     "JSONLTailerCursorQuestionTests", "DisplayOnlyWaitTests", "TurnFailureSoundTests", "SoundVolumeCurveTests", "GitBranchReaderTests",
-    "CursorHookPayloadTests", "HookIntakeGoldenTests", "HookEdgeFactsTests", "BridgeGoldenFixtures", "BridgeGoldenExpectations",
+    "CursorHookPayloadTests", "HookIntakeGoldenTests", "HookEdgeFactsTests", "HookOriginTests", "BridgeGoldenFixtures", "BridgeGoldenExpectations",
     "AntigravityHookContractTests", "GrokHookForwardingPolicyTests", "ESP32ProtocolTests", "AppleCompanionPayloadTests",
     "ClaudeQuotaSchedulerTests", "FollowUpReminderSchedulerTests", "RemoteReconnectPolicyTests", "ClaudeUsageScannerTests",
     "ModelLabelTests", "CoworkSessionTests", "CoworkAuditLogTests", "AgentTaskListTests", "AttentionPolicyTests", "DerivedSessionStateTests",
@@ -94,10 +96,10 @@ def main():
     # writes the macOS package or its dependency lockfile.
     stage([BRIDGE / "Package.swift", BRIDGE / "Package.resolved"], package)
     core_files = [ROOT / "Sources/CodeIslandCore" / f"{name}.swift" for name in CORE]
-    stage([*core_files, BRIDGE / "Platform/CorePlatform.swift"], package / "Sources/CodeIslandCore", core_selections(ROOT))
+    stage([*core_files, *sorted((BRIDGE / "Platform").glob("*.swift"))], package / "Sources/CodeIslandCore", core_selections(ROOT))
     stage((BRIDGE / "SQLite3").iterdir(), package / "Sources/SQLite3")
     stage((BRIDGE / "CryptoKit").glob("*.swift"), package / "Sources/CryptoKit")
-    app_files = [ROOT / "Sources/CodeIsland" / name for name in ("CodexPermissionRules.swift", "Discovery/SQLiteReader.swift")]
+    app_files = [ROOT / "Sources/CodeIsland" / name for name in ("CodexPermissionRules.swift", "Discovery/SQLiteReader.swift", "RemoteHost.swift")]
     stage([*sorted((BRIDGE / "Sources").glob("*.swift")), *app_files], package / "Sources/CodeIslandDesktopCore", app_selections(ROOT))
     tests = [ROOT / "Tests/CodeIslandCoreTests" / f"{name}.swift" for name in TESTS]
     stage([*tests, *sorted((BRIDGE / "Tests").glob("*.swift"))], package / "Tests/CodeIslandCoreTests", test_selections(ROOT))

@@ -8,6 +8,7 @@ use std::time::Duration;
 use codeisland_domain::{AgentEvent, Decision, UserAction};
 use codeisland_integrations::ssh::RemoteHookHandler;
 use codeisland_ipc::{ClientMessage, ServerMessage, PROTOCOL_VERSION};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
@@ -66,8 +67,35 @@ pub(crate) fn spawn(runtime: Arc<Runtime>, handle: tokio::runtime::Handle) -> Jo
     })
 }
 
-/// Bind an original remote-hook script's raw, EOF-framed payloads to the
-/// configured host that owns this SSH tunnel.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RoutedHook {
+    source: String,
+    event: String,
+    payload: Value,
+    waits: bool,
+    defer_to_provider: bool,
+    fields: codeisland_agents::normalize::HookFields,
+}
+
+impl RoutedHook {
+    fn receive(payload: Value, host: Option<(&str, &str)>) -> Option<Self> {
+        let host = host.map(|(id, name)| json!({"id": id, "name": name}));
+        codeisland_swift::call(c"hook.receive", json!({"payload": payload, "host": host}))
+    }
+
+    fn into_event(self) -> (String, AgentEvent) {
+        let mut event = codeisland_agents::normalize::project_received(&self.source, &self.event, self.payload, self.fields);
+        if !self.waits && event.event_type.is_blocking() {
+            // A provider can report a tool/question as activity without waiting for UI.
+            event.event_type = codeisland_domain::AgentEventType::Message;
+        }
+        event.waits = self.waits;
+        (self.source, event)
+    }
+}
+
+/// The tunnel selects the host before Swift examines any provider-supplied fields.
 pub fn remote_hook_handler(runtime: Arc<Runtime>, host_id: String) -> RemoteHookHandler {
     let held_requests = Arc::new(Semaphore::new(32));
     Arc::new(move |bytes| {
@@ -77,43 +105,10 @@ pub fn remote_hook_handler(runtime: Arc<Runtime>, host_id: String) -> RemoteHook
         Box::pin(async move {
             let settings = runtime.settings();
             let host = settings.remote_hosts.iter().find(|host| host.id == host_id)?;
-            let mut payload: Value = serde_json::from_slice(&bytes).ok()?;
-            let object = payload.as_object_mut()?;
-            let edge = object.remove("_edge");
-            let text_field = |field: &str| edge.as_ref()?.get(field)?.as_str();
-            let cursor_payload = object
-                .get("cursor_version")
-                .and_then(Value::as_str)
-                .is_some_and(|value| !value.trim().is_empty());
-            let source = if cursor_payload {
-                "cursor"
-            } else {
-                text_field("source")
-                    .filter(|source| !source.is_empty())
-                    .or_else(|| object.get("_source").and_then(Value::as_str))
-                    .unwrap_or("claude")
-            }
-            .to_owned();
-            let event_name = ["hook_event_name", "event", "event_name", "hookEventName", "type"]
-                .into_iter()
-                .find_map(|key| object.get(key).and_then(Value::as_str))?
-                .to_owned();
-            object.insert("_remote_host_id".into(), json!(host.id));
-            object.insert("_remote_host_name".into(), json!(host.name));
-            if cursor_payload {
-                if let Some(digest) = text_field("stdin_sha256") {
-                    object.insert("digest".into(), json!(digest));
-                }
-            }
-            let mut event = codeisland_agents::normalize(
-                &source,
-                &event_name,
-                &payload.to_string(),
-                text_field("cwd"),
-            )
-            .ok()?;
-            // Remote PIDs and transcript paths cannot identify local processes
-            // or files, including when a hook explicitly supplies those keys.
+            let hook = RoutedHook::receive(serde_json::from_slice(&bytes).ok()?, Some((&host.id, &host.name)))?;
+            let defer = hook.defer_to_provider;
+            let (source, mut event) = hook.into_event();
+            // Keep persisted Windows card identifiers and local OS handles distinct.
             event.pid = None;
             event.wezterm_pane = None;
             event.transcript_path = None;
@@ -121,57 +116,20 @@ pub fn remote_hook_handler(runtime: Arc<Runtime>, host_id: String) -> RemoteHook
             event.id = namespace(&event.id);
             event.session_id = namespace(&event.session_id);
             event.parent_session_id = event.parent_session_id.as_deref().map(namespace);
-            if !remote_cwd_allowed(&host.cwd_filter, &event) {
-                let ends_or_blocks = matches!(
-                    event.event_type,
-                    codeisland_domain::AgentEventType::SessionEnd
-                        | codeisland_domain::AgentEventType::TurnEnd
-                        | codeisland_domain::AgentEventType::SubagentEnd
-                        | codeisland_domain::AgentEventType::PermissionRequest
-                        | codeisland_domain::AgentEventType::Question
-                        | codeisland_domain::AgentEventType::Notification
-                );
-                if !ends_or_blocks
-                    || !runtime.state().store.sessions.iter().any(|session| session.session_id == event.session_id)
-                {
-                    return None;
-                }
-            }
-            let waits = event.event_type.is_blocking();
-            if waits && (cursor_payload || edge.as_ref().and_then(|value| value.get("waits")).and_then(Value::as_bool) == Some(false)) {
-                return None;
-            }
-            let _permit = if waits {
-                Some(held_requests.try_acquire_owned().ok()?)
-            } else {
-                None
-            };
-            let id = event.id.clone();
-            match handle_message(runtime, ClientMessage::Event {
-                v: PROTOCOL_VERSION,
-                id,
-                source,
-                event,
-                waits,
-                timeout_ms: None,
-            }).await {
+            let allowed: bool = codeisland_swift::call(c"hook.remoteFilter", json!({
+                "filter": host.cwd_filter, "cwd": event.cwd,
+                "roots": event.payload.as_ref().and_then(|row| row.get("workspace_roots")),
+                "event": event.raw_event_name, "session": event.session_id,
+                "tracked": runtime.state().store.sessions.iter().any(|session| session.session_id == event.session_id),
+            }));
+            if !allowed { return None; }
+            let _permit = if event.waits { Some(held_requests.try_acquire_owned().ok()?) } else { None };
+            match dispatch_event(runtime, event.id.clone(), source, event, None, defer).await {
                 Some(ServerMessage::Decision { stdout, .. }) => Some(stdout),
                 _ => None,
             }
         })
     })
-}
-
-fn remote_cwd_allowed(csv: &str, event: &AgentEvent) -> bool {
-    let mut patterns = csv.split(',').map(str::trim).filter(|entry| !entry.is_empty()).peekable();
-    patterns.peek().is_none()
-        || patterns.any(|pattern| {
-            event.cwd.as_ref().is_some_and(|cwd| cwd.contains(pattern))
-                || event.payload.as_ref()
-                    .and_then(|payload| payload.get("workspace_roots"))
-                    .and_then(Value::as_array)
-                    .is_some_and(|roots| roots.iter().filter_map(Value::as_str).any(|root| root.contains(pattern)))
-        })
 }
 
 /// Handles one parsed client message.
@@ -183,51 +141,44 @@ pub(crate) async fn handle_message(
         ClientMessage::Hello { id, .. } | ClientMessage::Heartbeat { id, .. } => {
             Some(acknowledge(id))
         }
-        ClientMessage::Event {
-            id,
-            source,
-            event,
-            waits,
-            timeout_ms,
-            ..
-        } => {
-            let settings = runtime.settings();
-            if hook_policy::excluded(&settings, &event) {
-                return Some(acknowledge(id));
-            }
-
-            codeisland_integrations::hook_webhook::forward(&settings, &source, &event);
-            if hook_policy::auto_approves(&settings, &source, &event) {
-                let decision = Decision {
-                    event_id: event.id.clone(),
-                    session_id: event.session_id.clone(),
-                    agent: event.agent,
-                    action: UserAction::Approve,
-                    text: None,
-                };
-                return Some(decision_message(id, &event, decision));
-            }
-
-            let blocking = waits || event.waits || event.event_type.is_blocking();
-            if !blocking {
-                runtime.handle_event(event);
-                return Some(acknowledge(id));
-            }
-
-            let timeout = timeout_ms
-                .map(Duration::from_millis)
-                .unwrap_or(DEFAULT_BLOCKING_TIMEOUT);
-
-            match runtime.handle_blocking(event.clone(), timeout).await {
-                Some(decision) => Some(decision_message(id, &event, decision)),
-                // The hook fails open when the user never decides.
-                None => Some(ServerMessage::Error {
-                    v: PROTOCOL_VERSION,
-                    id: response_id(),
-                    error: "decision timeout".to_owned(),
-                }),
-            }
+        ClientMessage::Hook { id, payload, timeout_ms, .. } => {
+            let Some(hook) = RoutedHook::receive(payload, None) else { return Some(acknowledge(id)) };
+            let defer = hook.defer_to_provider;
+            let (source, event) = hook.into_event();
+            dispatch_event(runtime, id, source, event, timeout_ms, defer).await
         }
+        ClientMessage::Event { id, source, mut event, waits, timeout_ms, .. } => {
+            // The compatibility message is accepted on the local pipe only.
+            let local: bool = codeisland_swift::call(c"hook.localOrigin", json!({"payload": event.payload}));
+            if !local { return Some(acknowledge(id)); }
+            event.waits |= waits || event.event_type.is_blocking();
+            dispatch_event(runtime, id, source, event, timeout_ms, false).await
+        }
+    }
+}
+
+async fn dispatch_event(
+    runtime: Arc<Runtime>, id: String, source: String, event: AgentEvent,
+    timeout_ms: Option<u64>, defer_to_provider: bool,
+) -> Option<ServerMessage> {
+    let settings = runtime.settings();
+    let policy = hook_policy::evaluate(&settings, &source, &event);
+    if policy == hook_policy::Policy::Exclude { return Some(acknowledge(id)); }
+    codeisland_integrations::hook_webhook::forward(&settings, &source, &event);
+    if policy == hook_policy::Policy::Approve {
+        let decision = Decision { event_id: event.id.clone(), session_id: event.session_id.clone(),
+            agent: event.agent, action: UserAction::Approve, text: None };
+        return Some(decision_message(id, &event, decision));
+    }
+    if defer_to_provider { return Some(acknowledge(id)); }
+    if !event.waits {
+        runtime.handle_event(event);
+        return Some(acknowledge(id));
+    }
+    let timeout = timeout_ms.map(Duration::from_millis).unwrap_or(DEFAULT_BLOCKING_TIMEOUT);
+    match runtime.handle_blocking(event.clone(), timeout).await {
+        Some(decision) => Some(decision_message(id, &event, decision)),
+        None => Some(ServerMessage::Error { v: PROTOCOL_VERSION, id: response_id(), error: "decision timeout".to_owned() }),
     }
 }
 
@@ -249,6 +200,30 @@ mod tests {
             }
         });
         Runtime::new_for_test(AppSettings::default())
+    }
+
+    #[tokio::test]
+    async fn named_pipe_applies_native_origin_and_question_routing() {
+        let runtime = runtime();
+        let call = |payload| ClientMessage::Hook { v: PROTOCOL_VERSION, id: "raw".into(), payload, timeout_ms: Some(10) };
+        for rejected in [
+            json!({"hook_event_name":"SessionStart","session_id":"spoof","_remote_host_id":"test"}),
+            json!({"session_id":"bad"}),
+            json!({"hook_event_name":"PermissionRequest","session_id":"no-listener","tool_name":"Read",
+                   "_edge":{"source":"claude","waits":false}}),
+        ] {
+            assert!(matches!(handle_message(runtime.clone(), call(rejected)).await, Some(ServerMessage::Ack { .. })));
+        }
+        assert!(runtime.state().store.sessions.is_empty());
+        let hook = RoutedHook::receive(json!({"hook_event_name":"PermissionRequest","session_id":"multi",
+            "tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Pick","header":"One"},
+            {"question":"Pick","header":"Two"}]}}), None).unwrap();
+        let (_, event) = hook.into_event();
+        assert!(event.waits);
+        assert_eq!(event.event_type, AgentEventType::Question);
+        let questions = &event.payload.unwrap()["questions"];
+        assert_eq!(questions[0]["answer_key"], "Pick");
+        assert_eq!(questions[1]["answer_key"], "Pick_2");
     }
 
     #[tokio::test]
@@ -558,10 +533,10 @@ PY"#).await.expect("uninstall preserves the user's hooks");
         ));
         assert!(runtime.state().store.pending.is_empty());
 
-        assert!(hook_policy::auto_approves(&runtime.settings(), "antigravity-cli", &event));
-        assert!(!hook_policy::auto_approves(&runtime.settings(), "antigravity", &event));
+        assert!(hook_policy::evaluate(&runtime.settings(), "antigravity-cli", &event) == hook_policy::Policy::Approve);
+        assert!(hook_policy::evaluate(&runtime.settings(), "antigravity", &event) != hook_policy::Policy::Approve);
         event.tool = Some("AskUserQuestion".to_owned());
-        assert!(!hook_policy::auto_approves(&runtime.settings(), "agy", &event));
+        assert!(hook_policy::evaluate(&runtime.settings(), "agy", &event) != hook_policy::Policy::Approve);
     }
 
     #[tokio::test]

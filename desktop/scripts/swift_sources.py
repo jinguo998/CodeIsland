@@ -40,6 +40,16 @@ class Source:
     def decl(self, signature):
         return self.span(*self.decl_bounds(signature))
 
+    def part(self, declaration, start, until, first_match=False):
+        """Select unique boundaries inside a declaration with repeated local names."""
+        first, last = self.decl_bounds(declaration)
+        def boundary(prefix, take_first=False):
+            found = [i for i in range(first, last) if self.lines[i].startswith(prefix)]
+            if not found or (not take_first and len(found) != 1):
+                raise ValueError(f"{self.path}: {declaration}: ambiguous or missing {prefix!r}")
+            return found[0]
+        return self.span(boundary(start, first_match), boundary(until))
+
     def line(self, signature):
         i = self.index(signature)
         return self.span(i, i + 1)
@@ -57,6 +67,8 @@ APP = "import CodeIslandCore\n" + FOUNDATION
 def core_selections(root):
     def source(name):
         return Source(root, f"Sources/CodeIslandCore/{name}.swift")
+    # Foundation exposes the CRT's memchr on Windows and Linux.
+    yield "HookOrigin", source("HookOrigin").section("import Foundation")
     git = source("GitBranchReader")
     pointer = "    static func parseGitdirPointer"
     yield "GitBranchReader", (git.section(until=pointer) + "}\n" +
@@ -104,13 +116,132 @@ def core_selections(root):
 def app_selections(root):
     def source(name):
         return Source(root, f"Sources/CodeIsland/{name}.swift")
+    server = source("HookServer")
+    settings = source("Settings")
+    tray = source("StatusItemController")
+    yield "TrayDrawing", FOUNDATION + namespace("extension DesktopTrayDrawing",
+        "    func draw() {\n        let ctx = self\n" + tray.line("        let size = NSSize(") +
+        "        width = size.width\n        height = size.height\n" + tray.line("            let pill = NSRect(") +
+        tray.part("    static func menuBarIcon(", "            NSBezierPath(roundedRect:", "            return true") + "    }\n")
+    yield "HookServer", APP + namespace("enum HookServer",
+        server.decl("    enum RouteKind:"), server.decl("    enum Intake {"),
+        *(server.decl("    nonisolated static func " + method) for method in (
+            "intake(", "routeKind(", "shouldDeferPermissionRequestToProvider(",
+            "cwdMatchesAnyPattern(", "remoteEventPassesCwdFilter(", "remoteEventBypassesCwdFilter(",
+            "isAutoApprovedSource(")),
+        "    static func approvedSources(_ raw: String) -> Set<String> {\n" +
+            settings.part("    var autoApproveSources:", "            let entries = raw.split", "        set {"))
+    state = source("AppState")
+    shortcuts = source("AppState+CardShortcuts")
+    yield "CardShortcut", (APP + source("IslandSurface").section()
+        + source("Settings").section("enum ShortcutAction:", "    var defaultBinding: ShortcutBinding?") + "}\n"
+        + namespace("extension DesktopCardShortcut", shortcuts.decl("    enum CardShortcutOutcome:"),
+            shortcuts.decl("    func performCardShortcut(")))
+    intake = Source(root, "Sources/CodeIslandCore/HookIntake.swift")
+    yield "AnswerTransport", APP + namespace("struct DesktopAnswerTransport",
+        "    let waitsForAnswer: Bool\n    let answerFormat: HookIntake.AnswerFormat\n",
+        intake.decl("    public func stdout(forAnswer"))
+    calls = source("AppState+ToolUseCache")
+    yield "HookAnswers", APP + namespace("struct DesktopHookAnswers",
+        "    static func askItems(_ event: HookEvent) -> [AskUserQuestionItem] {\n" +
+            state.section("        let originalQuestions = event.toolInput?", "        guard !askItems.isEmpty else {") +
+            "        return askItems\n    }\n",
+        state.decl("    nonisolated static func agentKeepsAlwaysRule("),
+        state.decl("    nonisolated static func claudeAlwaysAllowResponse("),
+        state.decl("    nonisolated static func isQoderEvent("),
+        state.decl("    private func askUserQuestionUpdatedInput("),
+        calls.section("    nonisolated static let plainAllowAnswer", "    /// Cache a PreToolUse"),
+        "    static func deny() -> Data {\n" +
+            state.part("    func denyPermission(", "        let response = #", "        pending.continuation.") +
+            "        return Data(response.utf8)\n    }\n",
+        "    func question(_ pending: DesktopQuestion, _ answer: String, answers: [String: String]) -> Data {\n" +
+            "        let responseData: Data\n        if pending.isFromPermission {\n" +
+            "            let updatedInput = askUserQuestionUpdatedInput(event: pending.event, answers: answers, answer: answer, originalQuestions: nil)\n" +
+            state.part("    func answerQuestion(_ answer:", "            let obj: [String: Any]", "        pending.resolution.", first_match=True) +
+            "        return responseData\n    }\n",
+        "    static func skip(isPermission: Bool) -> Data {\n        let responseData: Data\n        if isPermission {\n" +
+            state.part("    func skipQuestion(", "                responseData = Data(#", "            pending.resolution.", first_match=True) +
+            "        return responseData\n    }\n")
+    yield "Webhook", APP + namespace("enum DesktopWebhook",
+        "    static func encode(_ event: HookEvent, defaults: DesktopWebhookFilter, emit: (Data) -> Void) {\n" +
+        server.section("        let normalizedName = EventNormalizer.normalize(event.eventName)", "        var request = URLRequest") +
+        "        emit(body)\n    }\n")
+    remote = source("RemoteInstaller")
+    remote_helpers = (
+        "_codex_home", "_claude_config_dir", "_display_path",
+        "strip_json_comments", "ensure_jsonc_object", "write_opencode_config",
+        "append_our_hooks", "_normalize_traecli_hooks_list_indentation", "_detect_traecli_hook_item_indent",
+        "_render_managed_traecli_hooks", "_parse_yaml_scalar", "_codex_toml_string",
+        "_codex_toml_statements", "_codex_toml_key", "_codex_toml_tail",
+        "_codex_is_features_header", "_codex_without_appended_features", "_codex_hooks_toml",
+    )
+    literals = []
+    for name in remote_helpers:
+        first = remote.index(f"def {name}(")
+        last = first + 1
+        while last < len(remote.lines) and (not remote.lines[last].strip() or remote.lines[last][0].isspace()):
+            last += 1
+        body = "".join(remote.lines[first:last]).rstrip()
+        # The Swift compiler interprets the same literal escapes as the original.
+        literals.append('"""\n' + body + '\n"""')
+    yield "RemoteInstaller", FOUNDATION + namespace("enum DesktopRemoteInstaller",
+        "    static let helpers = [" + ",\n".join(literals) + '].joined(separator: "\\n\\n")\n',
+        remote.decl("    static func shellWord("), remote.decl("    static func quotedLiteral("),
+        remote.line("    static let remoteSocketBase"), remote.decl("    static func loginUID("),
+        remote.decl("    private static func isUID("), remote.decl("    static func socketOwnerUID("),
+        remote.decl("    static func remoteOpencodePluginForInstall("), remote.decl("    private static func jsonStringLiteral("))
+    installer = source("ConfigInstaller")
+    yield "JSONMinimalEditor", source("JSONMinimalEditor").section()
+    yield "InstallerCatalog", (APP + installer.decl("enum HookFormat {") + installer.decl("struct CLIConfig {") +
+        namespace("extension ConfigInstaller",
+            installer.section("    static func displayCodexPath", "    /// How many agents"),
+            installer.decl("    static func defaultEvents("), installer.decl("    private static func traecliNextEvents("),
+            installer.line("    static let mimoPluginSourceMarker"), installer.line("    static let mimoPluginSourceLine"),
+            installer.decl("    static func mimoPluginSource("),
+            installer.line("    private static let minimaxManifestMarker"), installer.decl("    static func minimaxManifestDocument("),
+            installer.decl("    static func stripJSONComments("),
+            "    static func opencodeTarget(_ opencodeConfigPathNew: String, _ opencodeConfigPathJsonc: String, fm: FileManager = .default) -> String {\n" +
+            installer.part("    private static func installOpencodePlugin(", "        let targetPath: String", "        let originalContents:") +
+            "        return targetPath\n    }\n",
+            installer.decl("    static func mergeOpencodePluginRef("), installer.decl("    static func removeOpencodePluginRef("),
+            "    static func traeCommand(event: String, timeout: Int, command: String) -> String {\n" +
+            """        let escapedCommand = command.replacingOccurrences(of: "'", with: "''")
+        let events = [(event, timeout, false)]
+""" + installer.part("    private static func renderManagedTraecliHooksText(", "        let timeout =", "        return lines.joined") +
+            '        return lines.joined(separator: "\\n")\n    }\n',
+            "    static func kimiBlock(event: String, timeout: Int, baseCommand: String) -> String {\n" +
+            installer.part("    internal static func installKimiHooks(", "            var block =", "            hookBlocks.append(block)") +
+            "        return block\n    }\n",
+            "    static func zcodeEntry(command: String, timeout: Int) -> [String: Any] {\n" +
+            installer.part("    static func mergeZcodeHooks(", "            var hook: [String: Any]", "            entries.append(") +
+            "        return [\"hooks\": [hook]]\n    }\n",
+            "    static var desktopCLIs: [CLIConfig] { builtInCLIs }\n",
+            "    static func writeEntry(cli: CLIConfig, event: String, timeout: Int, baseCommand: String, emit: ([String: Any]) -> Void) -> Bool {\n" +
+            installer.part("    static func installExternalHooks(", "            let entry: [String: Any]", "            eventEntries.append(entry)") +
+            "        emit(entry)\n        return true\n    }\n"))
     ordering = source("SessionListOrdering")
     yield "CardOrdering", (APP + ordering.section("enum SessionCardStatus", "    var label: String") +
         ordering.section("    var tier: Int", "enum SessionListOrdering") +
         namespace("enum SessionListOrdering", ordering.decl("    static func order("),
                   ordering.decl("    static func requestRank(")))
     idle = source("IdleSessionRemoval")
-    yield "IdleSessionRemoval", idle.section(until="enum RemovedSessionRevivalEvidence")
+    yield "IdleSessionRemoval", idle.section()
+    yield "DesktopAppRouting", APP + namespace("enum AppState",
+        source("AppState+DisplayOnlyWaits").decl("    nonisolated static func displayOnlyWaitAsk(forHookEvent"),
+        source("AppState+CodexAppServer").line("    nonisolated static let codexAppBundleId"),
+        source("TerminalActivator").decl("    static func codexDesktopThreadLink("))
+    redaction = source("DiagnosticsRedaction")
+    yield "DiagnosticText", (redaction.section(until="    static func redactedConfig(")
+        + redaction.section("    /// `value` with its secrets replaced"))
+    yield "AnimationSpeed", FOUNDATION + source("NotchAnimationMetrics").decl("enum NotchAnimationSpeed")
+    esp = source("ESP32StatePublisher")
+    yield "CompanionState", APP + namespace("extension DesktopCompanion",
+        esp.decl("    private struct BuddyDisplayContext {"), esp.decl("    func esp32DisplaySessionId("),
+        esp.decl("    func esp32DisplaySession("), esp.decl("    private func esp32DisplayContext("),
+        esp.decl("    func appleCompanionStatePayload("), esp.decl("    private func appleCompanionSessionPreviews("),
+        esp.decl("    private func appleCompanionSessionMessage("), esp.decl("    private func appleCompanionSessionPriority("),
+        esp.decl("    private func appleCompanionQuestionPayload("), esp.decl("    static func companionMessages("),
+        esp.decl("    static func companionReplyText("), esp.decl("    private static func appleCompanionPreviewText("))
     sound = source("SoundManager")
     yield "SoundTiming", APP + namespace("struct DesktopSoundTiming",
         sound.line("    private var turnFailureDebouncer"), sound.decl("    nonisolated static func isInQuietHours"),
@@ -155,6 +286,9 @@ def app_selections(root):
 
 
 def test_selections(root):
+    for name in ("HookServerCwdFilterTests", "RemoteCwdFilterTests"):
+        case = Source(root, f"Tests/CodeIslandTests/{name}.swift")
+        yield name, "import XCTest\n@testable import CodeIslandDesktopCore\n" + case.section("final class ")
     def source(name):
         return Source(root, f"Tests/CodeIslandCoreTests/{name}.swift")
     q = source("ClaudeQuotaTests")

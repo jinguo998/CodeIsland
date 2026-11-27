@@ -1,4 +1,5 @@
-# Port of RemoteInstaller.configureRemoteHooksScript in Sources/CodeIsland/RemoteInstaller.swift.
+# The desktop Swift build supplies the common functions from RemoteInstaller.configureRemoteHooksScript.
+# These operations add per-host ownership, locking, atomic updates and reversible installation.
 import json
 import fcntl
 import pathlib
@@ -28,36 +29,7 @@ if manifest and manifest["host_id"] != host_id:
 socket_path = request.get("socket_path") or manifest.get("socket_path", "")
 installed_configs = manifest.get("configs", [])
 
-def _codex_home():
-    raw = (os.environ.get("CODEX_HOME") or "").strip()
-    if not raw:
-        return home / ".codex"
-    expanded = os.path.expanduser(raw)
-    return pathlib.Path(expanded)
-
-def _claude_config_dir():
-    # Claude Code reads $CLAUDE_CONFIG_DIR as one verbatim path, else ~/.claude (#271).
-    # None means "unset" and the caller keeps the ~/.claude default. Same rules as the
-    # Mac-side ClaudeConfigPaths.normalized() (trim, expand ~, absolute only) EXCEPT
-    # Unicode normalization: ext4/xfs are byte-preserving, so an NFC-normalized path
-    # can name a directory that does not exist. Never normalize here. Mirrored in
-    # codeisland-remote-hook.py, which must resolve the same dir.
-    raw = (os.environ.get("CLAUDE_CONFIG_DIR") or "").strip()
-    if not raw:
-        return None
-    expanded = os.path.expanduser(raw)
-    if not os.path.isabs(expanded) or expanded.strip("/") == "":
-        return None
-    return pathlib.Path(expanded)
-
-def _display_path(path):
-    # Remote-home-relative form for the status line, so a skip reason names the
-    # exact directory that was checked on the remote host.
-    try:
-        rel = str(path.relative_to(home))
-    except ValueError:
-        return str(path)
-    return "~" if rel == "." else "~/" + rel
+# @codeisland-swift-remote-helpers@
 
 def ensure_json(path):
     try:
@@ -65,53 +37,6 @@ def ensure_json(path):
     except (OSError, UnicodeError, ValueError):
         return None
     return data if isinstance(data, dict) else None
-
-def strip_json_comments(text):
-    out = []
-    i = 0
-    in_string = False
-    escaped = False
-    while i < len(text):
-        ch = text[i]
-        nxt = text[i + 1] if i + 1 < len(text) else ""
-        if in_string:
-            out.append(ch)
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-            i += 1
-            continue
-        if ch == '"':
-            in_string = True
-            out.append(ch)
-            i += 1
-            continue
-        if ch == "/" and nxt == "/":
-            i += 2
-            while i < len(text) and text[i] != "\n":
-                i += 1
-            continue
-        if ch == "/" and nxt == "*":
-            i += 2
-            while i + 1 < len(text) and not (text[i] == "*" and text[i + 1] == "/"):
-                i += 1
-            i += 2
-            continue
-        out.append(ch)
-        i += 1
-    return "".join(out)
-
-def ensure_jsonc_object(path):
-    if path.exists():
-        try:
-            data = json.loads(strip_json_comments(path.read_text()))
-            return data if isinstance(data, dict) else None
-        except Exception:
-            return None
-    return {}
 
 def write_json(path, data):
     write_text_atomic(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
@@ -131,9 +56,6 @@ def write_text_atomic(path, text):
             os.unlink(tmp)
         except FileNotFoundError:
             pass
-
-def write_opencode_config(path, data):
-    write_json(path, data)
 
 def save_manifest():
     write_json(manifest_path, {
@@ -157,15 +79,6 @@ def command_for(source):
         "CODEISLAND_SOURCE=" + shlex.quote(source),
     ]
     return " ".join(assignments + ["python3", shlex.quote(str(hook_path))])
-
-def append_our_hooks(hooks, event, entries):
-    # Preserve user-authored entries (#242): remove_our_hooks() already dropped our
-    # stale entries, so append the fresh managed ones AFTER whatever the user has,
-    # mirroring the local ConfigInstaller merge semantics. Never replace the event key.
-    existing = hooks.get(event)
-    if not isinstance(existing, list):
-        existing = []
-    hooks[event] = existing + entries
 
 def owns_command(command, source):
     if not isinstance(command, str):
@@ -229,123 +142,6 @@ TRAECLI_EVENTS = [
     ("pre_compact", 5),
     ("post_compact", 5),
 ]
-
-def _normalize_traecli_hooks_list_indentation(contents):
-    # Best-effort repair for invalid YAML produced by mixed indentation under top-level `hooks:`.
-    #
-    # Only normalize indentation of *hook items* ("- type:" / "- command:")
-    # and shift the entire list item block left to match the smallest indent.
-    normalized = contents.replace("\r\n", "\n")
-    lines = normalized.split("\n")
-
-    hooks_index = None
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if line != stripped:
-            continue
-        if stripped.startswith("hooks:"):
-            hooks_index = i
-            break
-    if hooks_index is None:
-        return normalized
-
-    def _is_top_level_key(line):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            return False
-        if line != stripped:
-            return False
-        return ":" in stripped and not stripped.startswith("hooks:")
-
-    # Find the smallest indent among hook items.
-    indents = []
-    i = hooks_index + 1
-    while i < len(lines):
-        line = lines[i]
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            i += 1
-            continue
-        if _is_top_level_key(line):
-            break
-        if stripped.startswith("- type:") or stripped.startswith("- command:"):
-            indents.append(len(line) - len(line.lstrip(" ")))
-        i += 1
-    if not indents:
-        return normalized
-    base_indent = min(indents)
-
-    out = list(lines)
-    i = hooks_index + 1
-    while i < len(out):
-        line = out[i]
-        stripped = line.strip()
-        if not stripped:
-            i += 1
-            continue
-        if _is_top_level_key(line):
-            break
-        if stripped.startswith("- type:") or stripped.startswith("- command:"):
-            indent = len(line) - len(line.lstrip(" "))
-            if indent > base_indent:
-                delta = indent - base_indent
-                j = i
-                while j < len(out):
-                    nxt = out[j]
-                    nxt_stripped = nxt.strip()
-                    nxt_indent = len(nxt) - len(nxt.lstrip(" "))
-                    if j != i:
-                        if nxt_indent == indent and nxt_stripped.startswith("- "):
-                            break
-                        if nxt_indent < indent and nxt_stripped != "":
-                            break
-                    if nxt.startswith(" " * delta):
-                        out[j] = nxt[delta:]
-                    j += 1
-                i = j
-                continue
-        i += 1
-
-    return "\n".join(out)
-
-def _detect_traecli_hook_item_indent(lines, hooks_index):
-    def _is_top_level_key(line):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            return False
-        if line != stripped:
-            return False
-        return ":" in stripped and not stripped.startswith("hooks:")
-
-    indents = []
-    i = hooks_index + 1
-    while i < len(lines):
-        line = lines[i]
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            i += 1
-            continue
-        if _is_top_level_key(line):
-            break
-        if stripped.startswith("- type:") or stripped.startswith("- command:"):
-            indents.append(len(line) - len(line.lstrip(" ")))
-        i += 1
-    return min(indents) if indents else 2
-
-def _render_managed_traecli_hooks(cmd, indent=2):
-    # Escape single quotes for YAML single-quoted string
-    escaped = cmd.replace("'", "''")
-    timeout = max([t for (_, t) in TRAECLI_EVENTS] or [5])
-    pad = " " * indent
-    pad2 = " " * (indent + 2)
-    pad4 = " " * (indent + 4)
-    lines = [f"{pad}- type: command"]
-    lines.append(f"{pad2}command: '{escaped}'")
-    lines.append(f"{pad2}timeout: '{timeout}s'")
-    lines.append(f"{pad2}matchers:")
-    for (event, _) in TRAECLI_EVENTS:
-        lines.append(f"{pad4}- event: {event}")
-    return "\n".join(lines)
 
 def _remove_managed_traecli_hooks(contents):
     lines = contents.split("\n")
@@ -534,16 +330,6 @@ HERMES_EVENTS = [
     ("subagent_stop", 5),
 ]
 
-def _parse_yaml_scalar(raw):
-    raw = raw.strip()
-    if raw.startswith("'") and raw.endswith("'") and len(raw) >= 2:
-        return raw[1:-1].replace("''", "'")
-    if raw.startswith('"') and raw.endswith('"') and len(raw) >= 2:
-        inner = raw[1:-1]
-        bs = chr(92)
-        return inner.replace(bs + bs, bs).replace(bs + '"', '"')
-    return raw
-
 def _merge_hermes_hooks(contents, cmd=None):
     # Event-key-aware merge for Hermes' nested `hooks:` MAP. We parse the existing
     # map into an ordered {event: [item-blocks]} structure, drop our prior managed
@@ -692,288 +478,6 @@ def install_hermes():
     return "Hermes ok"
 
 # Codex TOML editing (#354).
-def _codex_toml_string(text, i, allow_multiline=False):
-    quote = text[i]
-    triple = text.startswith(quote * 3, i)
-    if triple and not allow_multiline:
-        raise ValueError("multiline key")
-    i += 3 if triple else 1
-    out = []
-    escapes = {'b': '\b', 't': '\t', 'n': '\n', 'f': '\f', 'r': '\r', '"': '"', '\\': '\\'}
-    while i < len(text):
-        ch = text[i]
-        if ch == quote:
-            end = i + 1
-            if triple:
-                while end < len(text) and text[end] == quote:
-                    end += 1
-                count = end - i
-                if count < 3:
-                    out.append(quote * count)
-                    i = end
-                    continue
-                if count > 5:
-                    raise ValueError("quote run")
-                out.append(quote * (count - 3))
-            return end, ''.join(out)
-        if ch == '\\' and quote == '"':
-            i += 1
-            if i == len(text):
-                break
-            ch = text[i]
-            if triple and ch in ' \t\r\n':
-                end = i
-                while end < len(text) and text[end] in ' \t\r\n':
-                    if text[end] == '\r' and not text.startswith('\r\n', end):
-                        raise ValueError("bare carriage return")
-                    end += 1
-                if '\n' not in text[i:end]:
-                    raise ValueError("invalid continuation")
-                i = end
-                continue
-            if ch in escapes:
-                out.append(escapes[ch])
-                i += 1
-                continue
-            if ch in ('u', 'U'):
-                end = i + (5 if ch == 'u' else 9)
-                digits = text[i + 1:end]
-                if len(digits) != end - i - 1 or any(c not in '0123456789abcdefABCDEF' for c in digits):
-                    raise ValueError("unicode escape")
-                value = int(digits, 16)
-                if value > 0x10ffff or 0xd800 <= value <= 0xdfff:
-                    raise ValueError("unicode scalar")
-                out.append(chr(value))
-                i = end
-                continue
-            raise ValueError("escape")
-        if ch in '\r\n' and not triple:
-            raise ValueError("newline in ordinary string")
-        if ch == '\r' and not text.startswith('\r\n', i):
-            raise ValueError("bare carriage return")
-        if (ord(ch) < 32 and ch not in '\t\r\n') or ord(ch) == 127:
-            raise ValueError("control character")
-        out.append(ch)
-        i += 1
-    raise ValueError("unclosed string")
-
-def _codex_toml_statements(text):
-    # Source ranges include their newline. This is a lexer, not a TOML serializer.
-    ranges, stack = [], []
-    start = i = 0
-    while i < len(text):
-        ch = text[i]
-        if ch in ('"', "'"):
-            i, _ = _codex_toml_string(text, i, True)
-            continue
-        if ch == '#':
-            end = text.find('\n', i)
-            i = len(text) if end < 0 else end
-            continue
-        if ch in '[{':
-            stack.append(ch)
-        elif ch in ']}':
-            if not stack or stack.pop() != ('[' if ch == ']' else '{'):
-                raise ValueError("mismatched delimiter")
-        elif ch == '\r' and not text.startswith('\r\n', i):
-            raise ValueError("bare carriage return")
-        elif (ord(ch) < 32 and ch not in '\t\r\n') or ord(ch) == 127:
-            raise ValueError("control character")
-        if ch == '\n' and not stack:
-            ranges.append((start, i + 1))
-            start = i + 1
-        i += 1
-    if stack:
-        raise ValueError("unclosed delimiter")
-    if start < len(text):
-        ranges.append((start, len(text)))
-    return ranges
-
-def _codex_toml_key(text, i):
-    path = []
-    while True:
-        i += len(text[i:]) - len(text[i:].lstrip(' \t'))
-        if i == len(text):
-            raise ValueError("missing key")
-        if text[i] in ('"', "'"):
-            i, name = _codex_toml_string(text, i)
-        else:
-            start = i
-            while i < len(text) and text[i] in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-':
-                i += 1
-            if i == start:
-                raise ValueError("invalid key")
-            name = text[start:i]
-        path.append(name)
-        key_end = i
-        i += len(text[i:]) - len(text[i:].lstrip(' \t'))
-        if i == len(text) or text[i] != '.':
-            return tuple(path), key_end, i
-        i += 1
-
-def _codex_toml_tail(text, i):
-    tail = text[i:].lstrip(' \t\r\n')
-    return not tail or tail.startswith('#')
-
-def _codex_is_features_header(text):
-    i = len(text) - len(text.lstrip(' \t'))
-    if text.startswith('[[', i):
-        return False
-    key, _, pos = _codex_toml_key(text, i + 1)
-    return key == ('features',) and text.startswith(']', pos)
-
-def _codex_without_appended_features(content, ranges):
-    # CodeIsland 1.0.35 and earlier appended [features] + hooks = true at EOF
-    # whenever its line regex missed the flag or the header, even when root dotted
-    # features.* keys or a spelling such as "[features] # note" already defined
-    # that table: a duplicate key that stops Codex from starting (#354). Drop
-    # exactly that trailing block and the blank line before it; else None.
-    features_defined, last_header = False, None
-    for index, (start, end) in enumerate(ranges):
-        text = content[start:end]
-        i = len(text) - len(text.lstrip(' \t'))
-        if i == len(text) or text[i] in '#\r\n':
-            continue
-        if text[i] == '[':
-            # Every header but the final one may be the earlier definition.
-            if last_header is not None and _codex_is_features_header(content[ranges[last_header][0]:ranges[last_header][1]]):
-                features_defined = True
-            last_header = index
-        elif last_header is None:
-            key = _codex_toml_key(text, i)[0]
-            if len(key) > 1 and key[0] == 'features':
-                features_defined = True
-    if not features_defined or last_header is None:
-        return None
-    start, end = ranges[last_header]
-    text = content[start:end]
-    i = len(text) - len(text.lstrip(' \t'))
-    if not text.startswith('[features]', i) or text[i + 10:].strip(' \t\r\n'):
-        return None
-    flags = 0
-    for body_start, body_end in ranges[last_header + 1:]:
-        text = content[body_start:body_end]
-        if not text.strip(' \t\r\n'):
-            continue
-        i = len(text) - len(text.lstrip(' \t'))
-        if text[i] == '#':
-            return None
-        key, _, pos = _codex_toml_key(text, i)
-        if key != ('hooks',) or not text.startswith('=', pos):
-            return None
-        pos += 1
-        pos += len(text[pos:]) - len(text[pos:].lstrip(' \t'))
-        if not any(text.startswith(v, pos) and not text[pos + len(v):].strip(' \t\r\n') for v in ('true', 'false')):
-            return None
-        flags += 1
-    if flags != 1:
-        return None
-    if last_header > 0:
-        blank_start, blank_end = ranges[last_header - 1]
-        if not content[blank_start:blank_end].strip(' \t\r\n'):
-            start = blank_start
-    return content[:start]
-
-def _codex_hooks_toml(content, heal=True):
-    # Narrow source editor: root features.hooks only; opaque values stay verbatim.
-    # tomllib, when available, validates both documents. Older Python still gets
-    # lexical, key/scope and conflicting-layout guards, not a full TOML parser.
-    try:
-        import tomllib
-    except ImportError:
-        tomllib = None
-    try:
-        if heal:
-            healed = _codex_without_appended_features(content, _codex_toml_statements(content))
-            if healed is not None:
-                return _codex_hooks_toml(healed, False)
-        if tomllib is not None:
-            tomllib.loads(content)
-        scope = ()
-        current = legacy = features_header = first_table = None
-        root_dotted = False
-        for start, end in _codex_toml_statements(content):
-            text = content[start:end]
-            i = len(text) - len(text.lstrip(' \t'))
-            if i == len(text) or text[i] in '#\r\n':
-                continue
-            if text[i] == '[':
-                array = text.startswith('[[', i)
-                scope, _, pos = _codex_toml_key(text, i + (2 if array else 1))
-                closing = ']]' if array else ']'
-                if not text.startswith(closing, pos) or not _codex_toml_tail(text, pos + len(closing)):
-                    return None
-                if scope[:2] == ('features', 'hooks') or (array and scope == ('features',)):
-                    return None
-                if first_table is None:
-                    first_table = start
-                if scope == ('features',):
-                    if features_header is not None:
-                        return None
-                    features_header = end
-                continue
-            key_start = i
-            key, key_end, pos = _codex_toml_key(text, i)
-            if pos == len(text) or text[pos] != '=':
-                return None
-            pos += 1
-            pos += len(text[pos:]) - len(text[pos:].lstrip(' \t'))
-            if pos == len(text) or text[pos] in '#\r\n':
-                return None
-            if not scope and len(key) > 1 and key[0] == 'features':
-                root_dotted = True
-            absolute = scope + key
-            if absolute == ('features',) or (absolute[:2] == ('features', 'hooks') and len(absolute) > 2):
-                return None
-            if absolute not in (('features', 'hooks'), ('features', 'codex_hooks')):
-                continue
-            value = next((v for v in ('true', 'false') if text.startswith(v, pos) and _codex_toml_tail(text, pos + len(v))), None)
-            if value is None:
-                return None
-            flag = (start, end, start + key_start, start + key_end, start + pos, start + pos + len(value), len(key))
-            if absolute == ('features', 'hooks'):
-                if current is not None:
-                    return None
-                current = flag
-            else:
-                if legacy is not None:
-                    return None
-                legacy = flag
-        # Root dotted features.* keys already define the table; an explicit
-        # [features] header too is a duplicate key Codex refuses to load.
-        if features_header is not None and root_dotted:
-            return None
-        edits = []
-        if current is not None:
-            edits.append((current[4], current[5], 'true'))
-            if legacy is not None:
-                edits.append((legacy[0], legacy[1], ''))
-        elif legacy is not None:
-            name = 'hooks' if legacy[6] == 1 else 'features.hooks'
-            edits.extend([(legacy[2], legacy[3], name), (legacy[4], legacy[5], 'true')])
-        else:
-            newline = '\r\n' if '\r\n' in content else '\n'
-            if features_header is not None:
-                pos = features_header
-                addition = ('' if content[:pos].endswith('\n') else newline) + 'hooks = true' + newline
-            elif first_table is not None:
-                pos = first_table
-                addition = 'features.hooks = true' + newline
-            else:
-                pos = len(content)
-                addition = (newline if content and not content.endswith('\n') else '') + 'features.hooks = true' + newline
-            edits.append((pos, pos, addition))
-        candidate = content
-        for start, end, replacement in sorted(edits, reverse=True):
-            candidate = candidate[:start] + replacement + candidate[end:]
-        if tomllib is not None:
-            features = tomllib.loads(candidate).get('features')
-            if not isinstance(features, dict) or features.get('hooks') is not True:
-                return None
-        return candidate
-    except (ValueError, TypeError):
-        return None
-
 def ensure_toml_codex_hooks(path):
     try:
         # newline='' avoids read_text's universal-newline normalization.

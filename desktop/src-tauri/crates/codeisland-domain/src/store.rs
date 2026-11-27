@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
 use serde_json::{Value, json};
 
-use crate::approval::{ApprovalAlwaysScope, agent_keeps_always_rule, command_for_event, commands_match};
+use crate::approval::{ApprovalAlwaysScope, source_keeps_always_rule, command_for_event, commands_match};
 use crate::ordering;
 use crate::session_metadata::{TranscriptMetadata, apply_transcript_checklist, apply_hook_checklist};
 use crate::settings::DEFAULT_MAX_HISTORY;
@@ -830,6 +830,7 @@ impl SessionStore {
                     event_id: event.id.clone(),
                     session_id: event.session_id.clone(),
                     agent: event.agent,
+                    hook_source: event.payload.as_ref().and_then(|p| p["_source"].as_str()).map(str::to_owned),
                     kind: RequestKind::Permission,
                     tool: tool.clone(),
                     title: event.title.clone().or_else(|| tool.clone()),
@@ -864,6 +865,7 @@ impl SessionStore {
                     event_id: event.id.clone(),
                     session_id: event.session_id.clone(),
                     agent: event.agent,
+                    hook_source: event.payload.as_ref().and_then(|p| p["_source"].as_str()).map(str::to_owned),
                     kind: RequestKind::Question,
                     tool: event.tool.clone(),
                     title: event.title.clone(),
@@ -1067,7 +1069,7 @@ impl SessionStore {
         }
         self.pending.shift_remove(event_id);
         if let Some(session) = self.sessions.get_mut(&request.session_id) {
-            if action == UserAction::AlwaysAllow && !agent_keeps_always_rule(request.agent) {
+            if action == UserAction::AlwaysAllow && !source_keeps_always_rule(request.hook_source.as_deref().unwrap_or(request.agent.hook_source())) {
                 if let ApprovalAlwaysScope::CodexRules { patterns } = &request.always_scope {
                     for pattern in patterns {
                         if !session.always_allowed_command_prefixes.contains(pattern) {
@@ -1103,19 +1105,21 @@ impl SessionStore {
     /// Applies the same held permission rule to live requests and their queued siblings.
     pub fn session_always_allows(&self, event: &AgentEvent) -> bool {
         event.event_type == AgentEventType::PermissionRequest
-            && self.is_held_approval(&event.session_id, event.agent, event.tool.as_deref(), command_for_event(event))
+            && self.is_held_approval(&event.session_id, event.agent,
+                event.payload.as_ref().and_then(|p| p["_source"].as_str()), event.tool.as_deref(), command_for_event(event))
     }
 
     fn is_held_approval(
         &self,
         session_id: &str,
         agent: AgentKind,
+        source: Option<&str>,
         tool: Option<&str>,
         command: Option<&str>,
     ) -> bool {
         let Some(session) = self.get(session_id) else { return false };
         let Some(tool) = tool.filter(|tool| !tool.is_empty()) else { return false };
-        !agent_keeps_always_rule(agent)
+        !source_keeps_always_rule(source.unwrap_or(agent.hook_source()))
             && (session.always_allowed_tools.iter().any(|allowed| allowed == tool)
                 || (agent == AgentKind::Codex && tool == "Bash"
                     && command.is_some_and(|command| commands_match(command, &session.always_allowed_command_prefixes))))
@@ -1137,6 +1141,7 @@ impl SessionStore {
                 request.kind == RequestKind::Permission && self.is_held_approval(
                     &request.session_id,
                     request.agent,
+                    request.hook_source.as_deref(),
                     request.tool.as_deref(),
                     request.tool_input.as_ref().and_then(|input| input.get("command")).and_then(serde_json::Value::as_str),
                 )
@@ -1251,15 +1256,19 @@ impl SessionStore {
         }).cloned() else {
             return true;
         };
-        let starts_work = matches!(
-            event.event_type,
-            AgentEventType::SessionStart
-                | AgentEventType::UserPrompt
-                | AgentEventType::ToolStart
-                | AgentEventType::SubagentStart
-        ) || event.raw_event_name.as_deref() == Some("PreCompact");
-        if event.timestamp <= removal.at || !(starts_work || event.event_type.is_blocking()) {
-            return false;
+        if event.timestamp <= removal.at { return false; }
+        if !event.event_type.is_blocking() {
+            let synthetic = match event.event_type {
+                AgentEventType::SessionStart => "SessionStart",
+                AgentEventType::UserPrompt => "UserPromptSubmit",
+                AgentEventType::ToolStart => "PreToolUse",
+                AgentEventType::SubagentStart => "SubagentStart",
+                _ => "Event",
+            };
+            let revives: bool = codeisland_swift::call(c"session.revives", serde_json::json!({
+                "event": event.raw_event_name.as_deref().unwrap_or(synthetic), "payload": event.payload,
+            }));
+            if !revives { return false; }
         }
         for id in &removal.members {
             if self.removed_idle.get(id).is_some_and(|group| Arc::ptr_eq(group, &removal)) {

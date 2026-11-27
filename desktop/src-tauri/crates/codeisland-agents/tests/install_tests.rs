@@ -16,6 +16,30 @@ fn claude() -> &'static codeisland_agents::AgentDefinition {
 }
 
 #[test]
+fn opencode_prefers_existing_jsonc_and_preserves_user_plugins_across_upgrade() {
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().join(".config/opencode");
+    fs::create_dir_all(&root).unwrap();
+    let current = root.join("opencode.jsonc");
+    let old = root.join("opencode.json");
+    fs::write(&current, "// Keep my preferences\n{\n  \"model\": \"user-model\",\n  \"plugin\": [[\"user\",{\"flag\":true}],\"@user/codeisland-export\"]\n}\n").unwrap();
+    fs::write(&old, r#"{"plugin":["unrelated","file:///old/plugins/codeisland.js"]}"#).unwrap();
+    install_at(AgentKind::OpenCode, home.path()).unwrap();
+    let registered = fs::read_to_string(&current).unwrap();
+    assert!(registered.contains("codeisland.js"));
+    install_at(AgentKind::OpenCode, home.path()).unwrap();
+    assert_eq!(fs::read_to_string(&current).unwrap(), registered);
+    let old_json: Value = serde_json::from_str(&fs::read_to_string(&old).unwrap()).unwrap();
+    assert_eq!(old_json["plugin"], serde_json::json!(["unrelated"]));
+    uninstall_at(AgentKind::OpenCode, home.path()).unwrap();
+    let removed = fs::read_to_string(current).unwrap();
+    assert!(removed.starts_with("// Keep my preferences\n"));
+    let config: Value = serde_json::from_str(removed.trim_start_matches("// Keep my preferences\n")).unwrap();
+    assert_eq!(config["model"], "user-model");
+    assert_eq!(config["plugin"], serde_json::json!([["user", {"flag":true}], "@user/codeisland-export"]));
+}
+
+#[test]
 fn claude_merge_is_idempotent_and_preserves_unknown_keys() {
     let existing = r#"{
         "theme": "dark",

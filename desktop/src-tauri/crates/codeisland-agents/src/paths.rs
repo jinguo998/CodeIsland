@@ -95,35 +95,31 @@ impl Paths {
     }
 
     fn resolve_claude_config_dir_from(&self, preference: &str, environment: &str) -> PathBuf {
-        let configured = |raw: &str| {
+        // Expand Windows variables and validate drive/UNC roots before calling
+        // ClaudeConfigPaths, whose Unix absolute-path check only accepts '/'.
+        let expanded = |raw: &str| {
             let raw = raw.trim();
-            let path = if raw == "~" {
-                self.home.clone()
-            } else if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
-                self.home.join(rest)
+            if let Some(rest) = raw.strip_prefix("~\\") {
+                Some(self.home.join(rest).to_string_lossy().into_owned())
             } else if raw.starts_with('%') {
-                PathBuf::from(expand_env(raw)?)
+                expand_env(raw)
             } else {
-                PathBuf::from(raw)
-            };
-            (path.is_absolute() && path.parent().is_some()).then_some(path)
-        };
-        if let Some(path) = configured(preference).or_else(|| configured(environment)) {
-            return path;
-        }
-
-        // settings.json alone is not evidence. CodeIsland can create it.
-        let default = self.home.join(".claude");
-        for path in [
-            default.clone(),
-            self.home.join(".config").join("claude"),
-            self.home.join(".config").join("claude-code"),
-        ] {
-            if path.join("projects").is_dir() {
-                return path;
+                Some(raw.to_owned())
             }
+        };
+        let preference = expanded(preference);
+        let environment = expanded(environment);
+        #[cfg(windows)]
+        for candidate in [preference.as_deref(), environment.as_deref()].into_iter().flatten() {
+            let path = if candidate == "~" { self.home.clone() }
+                else if let Some(rest) = candidate.strip_prefix("~/") { self.home.join(rest) }
+                else { PathBuf::from(candidate) };
+            if path.is_absolute() && path.parent().is_some() { return path; }
         }
-        default
+        let resolved: String = codeisland_swift::call(c"install.claudeRoot", serde_json::json!({
+            "home": self.home, "preference": preference, "environment": environment,
+        }));
+        PathBuf::from(resolved)
     }
 
     fn extra_claude_config_dirs(&self) -> impl Iterator<Item = PathBuf> + '_ {
@@ -209,7 +205,7 @@ impl Paths {
         }
         def.config_paths
             .iter()
-            .map(|path| self.expand(path))
+            .map(|path| config_candidate(def, self.expand(path)))
             .collect()
     }
 
@@ -228,7 +224,7 @@ impl Paths {
                         .trim_start_matches("~/")
                         .trim_start_matches('/')
                         .trim_start_matches('\\');
-                    dir.join(relative)
+                    config_candidate(def, dir.join(relative))
                 })
             })
             .collect()
@@ -367,6 +363,16 @@ pub(crate) fn resolve_write_path(path: &Path) -> PathBuf {
         }
     }
     path.to_path_buf()
+}
+
+fn config_candidate(def: &AgentDefinition, path: PathBuf) -> PathBuf {
+    if def.agent == AgentKind::OpenCode && path.file_name().is_some_and(|name| name == "opencode.json") {
+        let selected: String = codeisland_swift::call(c"install.opencodeTarget", serde_json::json!({
+            "json": path, "jsonc": path.with_extension("jsonc"),
+        }));
+        return PathBuf::from(selected);
+    }
+    path
 }
 
 fn hook_names() -> [&'static str; 2] {
