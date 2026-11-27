@@ -3,43 +3,55 @@
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+from swift_sources import app_selections, core_selections, test_selections
+
 ROOT = Path(__file__).resolve().parents[2]
 BRIDGE = ROOT / "desktop/swift"
 CORE = (
-    "ClaudeSessionRecord", "ClaudeConfigPaths", "ConfigPathIdentity", "ExtraConfigDirs", "ClaudeDesktopCodeSession", "ClaudeQuota", "ClaudeQuotaClient", "ClaudeQuotaScheduler", "ClaudeUsageScanner", "ModelLabel",
-    "GitBranchReader", "ESP32Protocol", "AppleCompanionPayload", "AppleCompanionBluetooth", "AgentTaskList", "AgentTaskParsing", "AttentionPolicy", "BackgroundCompactionFilter",
-    "SQLiteReader", "CodexStateStore", "CodexRollout", "CoworkSession", "CoworkAuditLog", "CodexAppServerProtocol", "CodexHooksConfig", "CodexPermissionRules", "CodexThreadSubsession", "CursorHookPayload", "CursorSessionFolding", "DeclaredSubsession",
-    "DisplayOnlyWait", "AiWorkStatusMapper", "EventSoundRouting", "SoundVolumeCurve", "SceneMuteState", "HermesHookPayload", "HermesSessionStore", "HostHarness", "JSONLTailer",
-    "Models",
-    "PushLocalization", "PushTransport", "PushChannel", "PushNotification", "PushPolicy", "IdleSessionRemoval", "SessionListOrdering", "SessionRecap", "SessionSnapshot",
-    "SubsessionLink", "SubsessionRouter", "WarpPaneResolver",
-    "HookIntake", "HookEdgeFacts", "AntigravityHookContract", "GrokHookForwardingPolicy", "GrokSessionPaths",
-    "EventNormalizer", "FollowUpReminderScheduler", "RemoteReconnectPolicy",
+    "ClaudeConfigPaths", "ConfigPathIdentity", "ExtraConfigDirs", "ClaudeDesktopCodeSession",
+    "ClaudeQuota", "ClaudeQuotaScheduler", "ClaudeUsageScanner", "ModelLabel",
+    "GitBranchReader", "ESP32Protocol", "AppleCompanionPayload", "AgentTaskList", "AttentionPolicy", "BackgroundCompactionFilter",
+    "CoworkSession", "CoworkAuditLog", "CodexHooksConfig", "CodexThreadSubsession", "CursorHookPayload",
+    "CursorSessionFolding", "DeclaredSubsession", "DisplayOnlyWait", "EventSoundRouting", "SoundVolumeCurve", "SceneMuteState",
+    "HermesHookPayload", "HermesSessionStore", "HostHarness", "Models", "PushNotification", "PushPolicy", "SessionRecap",
+    "SessionSnapshot", "SubsessionLink", "SubsessionRouter", "WarpPaneResolver", "HookIntake", "HookEdgeFacts",
+    "AntigravityHookContract", "GrokHookForwardingPolicy", "GrokSessionPaths", "EventNormalizer",
+    "FollowUpReminderScheduler", "RemoteReconnectPolicy",
 )
-APP_TESTS = ("SQLiteReaderClosedWALTests",)
-TESTS = ("JSONLTailerTests", "JSONLTailerCursorQuestionTests", "DisplayOnlyWaitTests", "TurnFailureSoundTests", "SoundVolumeCurveTests", "SessionDiscoveryTests", "CodexAppServerProtocolTests", "GitBranchReaderTests", "CursorHookPayloadTests", "HookIntakeGoldenTests", "HookEdgeFactsTests", "BridgeGoldenHarness", "BridgeGoldenFixtures",
-         "BridgeGoldenExpectations", "AntigravityHookContractTests", "GrokHookForwardingPolicyTests", "ESP32ProtocolTests", "AppleCompanionPayloadTests", "ClaudeQuotaTests", "ClaudeQuotaSchedulerTests", "FollowUpReminderSchedulerTests",
-         "RemoteReconnectPolicyTests", "ClaudeUsageScannerTests", "ModelLabelTests",
-         "CoworkSessionTests", "CoworkAuditLogTests", "AgentTaskListTests", "AttentionPolicyTests", "DerivedSessionStateTests",
-         "HookEventFactsTests", "HookEventToolUseIdTests", "OutOfOrderToolStepTests",
-         "PushSigningAndResponseTests", "PushChannelPayloadTests", "PushRedactionTests", "PushPolicyTests", "ReplyCompletePlaceholderTests",
-         "SessionRecapTests", "SubsessionReducerTests", "SubsessionRouterTests", "SubsessionTestSupport")
+TESTS = (
+    "JSONLTailerCursorQuestionTests", "DisplayOnlyWaitTests", "TurnFailureSoundTests", "SoundVolumeCurveTests", "GitBranchReaderTests",
+    "CursorHookPayloadTests", "HookIntakeGoldenTests", "HookEdgeFactsTests", "BridgeGoldenFixtures", "BridgeGoldenExpectations",
+    "AntigravityHookContractTests", "GrokHookForwardingPolicyTests", "ESP32ProtocolTests", "AppleCompanionPayloadTests",
+    "ClaudeQuotaSchedulerTests", "FollowUpReminderSchedulerTests", "RemoteReconnectPolicyTests", "ClaudeUsageScannerTests",
+    "ModelLabelTests", "CoworkSessionTests", "CoworkAuditLogTests", "AgentTaskListTests", "AttentionPolicyTests", "DerivedSessionStateTests",
+    "HookEventFactsTests", "HookEventToolUseIdTests", "OutOfOrderToolStepTests", "PushChannelPayloadTests", "PushRedactionTests",
+    "PushPolicyTests", "ReplyCompletePlaceholderTests", "SessionRecapTests", "SubsessionReducerTests", "SubsessionRouterTests",
+    "SubsessionTestSupport",
+)
+MAC_TESTS = ("ClaudeQuotaTests", "JSONLTailerTests", "PushSigningAndResponseTests", "CodexAppServerClientTests",
+             "SessionListOrderingTests", "IdleSessionRemovalTests", "CodexAutoReviewRoutingTests", "ApprovalTrustBoundaryTests",
+             "AppStateToolUseCacheTests", "AppStateCodexTranscriptTests", "ClaudeSessionRecordPairingTests", "SQLiteReaderClosedWALTests")
 
 
-def stage(sources, destination):
+def stage(sources, destination, selections=()):
     destination.mkdir(parents=True, exist_ok=True)
-    names = {source.name for source in sources}
-    for source in sources:
-        output = destination / source.name
-        if not output.exists() or source.read_bytes() != output.read_bytes():
-            shutil.copyfile(source, output)
+    inputs = {source.name: source.read_bytes() for source in sources}
+    for name, content in selections:
+        filename = f"Selected{name}.swift"
+        if filename in inputs:
+            raise ValueError(f"duplicate Swift build input: {filename}")
+        inputs[filename] = content.encode("utf-8")
+    for name, content in inputs.items():
+        output = destination / name
+        if not output.exists() or output.read_bytes() != content:
+            output.write_bytes(content)
     for stale in destination.glob("*.swift"):
-        if stale.name not in names:
+        if stale.name not in inputs:
             stale.unlink()
 
 
@@ -70,7 +82,7 @@ def main():
         sound_assets(args.check)
         return
     if args.action == "macos-test":
-        subprocess.run(["swift", "test", "--package-path", str(ROOT), "--filter", "|".join((*TESTS, *APP_TESTS, "SessionListOrderingTests", "IdleSessionRemovalTests", "CodexAppServerClientTests", "CodexAutoReviewRoutingTests", "ApprovalTrustBoundaryTests", "AppStateCodexTranscriptTests", "ClaudeSessionRecordPairingTests"))], check=True)
+        subprocess.run(["swift", "test", "--package-path", str(ROOT), "--filter", "|".join((*TESTS, *MAC_TESTS))], check=True)
         return
     if args.scratch is None:
         parser.error("--scratch is required for a desktop build")
@@ -79,12 +91,14 @@ def main():
     # works across volumes on Windows without symlink privileges. It never
     # writes the macOS package or its dependency lockfile.
     stage([BRIDGE / "Package.swift", BRIDGE / "Package.resolved"], package)
-    stage([ROOT / "Sources/CodeIslandCore" / f"{name}.swift" for name in CORE], package / "Sources/CodeIslandCore")
-    stage(sorted((BRIDGE / "DesktopSQLite").glob("*")), package / "Sources/DesktopSQLite")
-    stage(sorted((BRIDGE / "Sources").glob("*.swift")), package / "Sources/CodeIslandDesktopCore")
+    core_files = [ROOT / "Sources/CodeIslandCore" / f"{name}.swift" for name in CORE]
+    stage([*core_files, BRIDGE / "Platform/CorePlatform.swift"], package / "Sources/CodeIslandCore", core_selections(ROOT))
+    stage((BRIDGE / "SQLite3").iterdir(), package / "Sources/SQLite3")
+    stage((BRIDGE / "CryptoKit").glob("*.swift"), package / "Sources/CryptoKit")
+    app_files = [ROOT / "Sources/CodeIsland" / name for name in ("CodexPermissionRules.swift", "Discovery/SQLiteReader.swift")]
+    stage([*sorted((BRIDGE / "Sources").glob("*.swift")), *app_files], package / "Sources/CodeIslandDesktopCore", app_selections(ROOT))
     tests = [ROOT / "Tests/CodeIslandCoreTests" / f"{name}.swift" for name in TESTS]
-    tests.extend(ROOT / "Tests/CodeIslandTests" / f"{name}.swift" for name in APP_TESTS)
-    stage(tests, package / "Tests/CodeIslandCoreTests")
+    stage([*tests, *sorted((BRIDGE / "Tests").glob("*.swift"))], package / "Tests/CodeIslandCoreTests", test_selections(ROOT))
     base = ["swift", args.action, "--package-path", str(package), "-c", args.configuration]
     if jobs := os.environ.get("NUM_JOBS"):
         base += ["--jobs", jobs]

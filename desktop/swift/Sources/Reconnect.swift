@@ -1,7 +1,7 @@
 import CodeIslandCore
 import Foundation
 
-func reconnectOperation(_ op: String, _ data: Data, policy: inout RemoteReconnectPolicy) throws -> Data {
+func reconnectOperation(_ op: String, _ data: Data, policy: inout RemoteReconnectPolicy, unknown: inout Bool) throws -> Data {
     struct Failure: Decodable { let id: String; let auto: Bool }
     struct Step: Encodable { let step: String; let seconds: Double? }
     let decoder = JSONDecoder()
@@ -29,10 +29,13 @@ func reconnectOperation(_ op: String, _ data: Data, policy: inout RemoteReconnec
         return try encoder.encode(policy.config.wakeSettle)
     case "ssh.network":
         guard let online = try decoder.decode(Bool?.self, from: data) else {
-            policy.networkUnknown()
+            unknown = true
+            _ = policy.networkChanged(satisfied: true)
             return Data("null".utf8)
         }
-        return try encoder.encode(policy.networkChanged(satisfied: online) ? policy.config.networkSettle : nil)
+        let recovered = policy.networkChanged(satisfied: online)
+        defer { unknown = false }
+        return try encoder.encode(recovered && !unknown ? policy.config.networkSettle : nil)
     default:
         throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Unknown reconnect event"))
     }

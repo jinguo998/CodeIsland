@@ -43,3 +43,51 @@ func prepareHook(_ operation: String, _ data: Data) throws -> Data {
     result["immediate"] = intake.immediateStdout
     return try JSONSerialization.data(withJSONObject: result)
 }
+
+func permissionToolCall(_ operation: String, _ data: Data) throws -> Data {
+    let args = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+    let encoder = JSONEncoder()
+    func input(_ value: Any?) -> Any? { value is NSNull ? nil : value }
+    switch operation {
+    case "tool.fields":
+        var row = args
+        // Desktop CLI adapters can supply tool facts without a wire hook name.
+        row["hook_event_name"] = "PreToolUse"
+        let event = HookEvent(json: row)
+        var result: [String: Any] = [:]
+        result["id"] = event?.toolUseId
+        result["input"] = event?.toolInput ?? input(row["tool_input"] ?? row["toolInput"])
+        return try JSONSerialization.data(withJSONObject: result)
+    case "tool.sameInput":
+        return try encoder.encode(try sameWireInput(input(args["first"]), input(args["second"])))
+    case "tool.keepsRequest":
+        let name = EventNormalizer.normalize(args["event"] as? String ?? "")
+        guard let step = HookEvent(json: ["hook_event_name": name, "_source": args["source"] ?? NSNull()]),
+              let request = HookEvent(json: ["hook_event_name": "PermissionRequest", "_source": args["requestSource"] ?? NSNull()])
+        else { return try encoder.encode(false) }
+        return try encoder.encode(DesktopPermissionCalls().shouldKeepQueuedPermissionForCompletedEvent(
+            step, queued: PermissionRequest(event: request), normalizedEventName: name))
+    default:
+        func call(_ key: String) -> HookEvent? {
+            let call = args[key] as? [String: Any] ?? [:]
+            return HookEvent(json: ["hook_event_name": "PreToolUse", "_source": "claude",
+                "agent_id": call["agent"] ?? NSNull(), "tool_name": call["tool"] ?? NSNull(),
+                "tool_input": call["input"] ?? NSNull()])
+        }
+        guard let step = call("step"), let request = call("request") else { return try encoder.encode(false) }
+        let original = input(args["original"])
+        let matches = DesktopPermissionCalls.step(step, calledWith: original as? [String: Any], isPastRequest: request)
+        let supplied = [input((args["step"] as? [String: Any])?["input"]), original].compactMap { $0 }
+        if matches, let asked = input((args["request"] as? [String: Any])?["input"]), !supplied.isEmpty {
+            return try encoder.encode(try supplied.contains { try sameWireInput($0, asked) })
+        }
+        return try encoder.encode(matches)
+    }
+}
+
+// Preserve JSON boolean and integer identity across the Rust/Foundation boundary.
+private func sameWireInput(_ left: Any?, _ right: Any?) throws -> Bool {
+    let options: JSONSerialization.WritingOptions = [.sortedKeys, .fragmentsAllowed]
+    return try JSONSerialization.data(withJSONObject: left ?? [:], options: options)
+        == JSONSerialization.data(withJSONObject: right ?? [:], options: options)
+}

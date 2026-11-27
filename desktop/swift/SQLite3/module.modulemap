@@ -1,4 +1,4 @@
-module DesktopSQLite [system] {
+module SQLite3 [system] {
     header "shim.h"
     export *
 }

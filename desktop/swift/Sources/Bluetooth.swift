@@ -6,7 +6,7 @@ func companionFrames(_ data: Data) throws -> Data {
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601
     let args = try decoder.decode(Arguments.self, from: data)
-    let frames = try AppleCompanionBluetooth.frames(for: args.payload, maxNotificationBytes: args.maximum)
+    let frames = try DesktopCompanionFrames.frames(for: args.payload, maxNotificationBytes: args.maximum)
     return try JSONEncoder().encode(frames.map { [UInt8]($0) })
 }
 

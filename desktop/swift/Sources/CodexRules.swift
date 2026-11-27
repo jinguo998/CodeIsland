@@ -1,6 +1,13 @@
 import CodeIslandCore
 import Foundation
 
+// The runtime resolves Windows and WSL homes before entering the original rules engine.
+enum ConfigInstaller {
+    @TaskLocal static var home: String = ""
+    static func codexHome() -> String { home }
+    static func codexHomes() -> [String] { [home] }
+}
+
 func codexRule(_ operation: String, _ data: Data) throws -> Data {
     struct Arguments: Decodable {
         let home: String?
@@ -20,10 +27,10 @@ func codexRule(_ operation: String, _ data: Data) throws -> Data {
         return try encoder.encode(CodexPermissionRules.commandsStart(event, withAnyOf: Set(args.patterns ?? [])))
     case "codex.scope":
         let scope: Scope
-        switch args.home.map({ CodexPermissionRules.scope(for: event, codexHome: $0) }) ?? .session {
+        switch args.home.flatMap({ $0.isEmpty ? nil : ConfigInstaller.$home.withValue($0) { ApprovalAlwaysScope(for: event) } }) ?? .session {
         case .session: scope = .init(kind: "session", patterns: nil)
-        case .mcpTool: scope = .init(kind: "codex_mcp_config", patterns: nil)
-        case .prefixes(let patterns): scope = .init(kind: "codex_rules", patterns: patterns)
+        case .codexMCPConfig: scope = .init(kind: "codex_mcp_config", patterns: nil)
+        case .codexRules(let patterns): scope = .init(kind: "codex_rules", patterns: patterns)
         }
         return try encoder.encode(scope)
     default:
@@ -32,9 +39,9 @@ func codexRule(_ operation: String, _ data: Data) throws -> Data {
         }
         let rules = CodexPermissionRules()
         if let patterns = args.patterns {
-            return try encoder.encode(rules.persistPrefixRules(patterns, for: event, codexHome: home))
+            return try encoder.encode(ConfigInstaller.$home.withValue(home) { rules.persistPrefixRules(patterns, for: event) })
         }
         guard CodexPermissionRules.mcpToolApprovalTarget(for: event) != nil else { return try encoder.encode(false) }
-        return try encoder.encode(rules.persistAlwaysAllowRule(for: event, codexHome: home))
+        return try encoder.encode(ConfigInstaller.$home.withValue(home) { rules.persistAlwaysAllowRule(for: event) })
     }
 }

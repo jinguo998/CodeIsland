@@ -24,7 +24,7 @@ func fetchQuota(in directory: String) throws -> Data {
         do {
             let snapshot = try await ClaudeQuotaClient.fetch(credential: {
                 ClaudeCredentialStore.readFile(claudeHome: directory).flatMap(ClaudeCredentialStore.parse)
-            })
+            }, session: ClaudeQuotaClient.desktopSession)
             result.finish(.success(snapshot))
         } catch {
             result.finish(.failure(error))

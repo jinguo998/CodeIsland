@@ -78,7 +78,7 @@ struct DesktopSessions {
 
     mutating func apply(_ data: Data) throws -> Data {
         let args = try JSONDecoder().decode(ReductionArguments.self, from: data)
-        guard let event = try bridgeHook(data) else { return Data("null".utf8) }
+        guard let event = try bridgeHook(data, forDisplay: true) else { return Data("null".utf8) }
         switch EventNormalizer.normalize(event.eventName) {
         case "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
              "PermissionDenied", "AfterAgentResponse", "AgentTurnSettled", "TaskRoundComplete",
@@ -89,14 +89,17 @@ struct DesktopSessions {
             // have their own transport contract.
             return Data("null".utf8)
         }
+        let nativeID = event.sessionId ?? "default"
+        var native: [String: SessionSnapshot] = [:]
         if !args.fresh {
             var previous = cards[args.card] ?? SessionSnapshot()
             args.previous.synchronize(&previous)
-            cards[args.card] = previous
+            native[nativeID] = previous
         }
-        let reduction = reduceHookEvent(sessions: &cards, event: event, maxHistory: args.limit)
-        let removed = reduction.effects.contains(.removeSession(sessionId: args.card))
-        let session = cards[args.card] ?? SessionSnapshot()
+        let reduction = reduceHookEvent(sessions: &native, event: event, maxHistory: args.limit)
+        let removed = reduction.effects.contains(.removeSession(sessionId: nativeID))
+        let session = native[nativeID] ?? SessionSnapshot()
+        cards[args.card] = native[nativeID]
         let facts = reduction.facts
         // A failed turn is an idle Swift card with an error outcome. The
         // desktop view model exposes those as separate status values.
@@ -139,7 +142,9 @@ func classifyTranscript(_ data: Data) throws -> Data {
             row["role"] = role
         }
     }
-    let delta = JSONLTailer.scanRecord(row)
+    var line = try JSONSerialization.data(withJSONObject: row)
+    line.append(0x0a)
+    let delta = JSONLTailer.scanLines(line).delta
     let type = row["type"] as? String
     let codex = type == "event_msg" || type == "response_item"
     let publicOutput = codex ? delta.lastAssistantMessage : nil

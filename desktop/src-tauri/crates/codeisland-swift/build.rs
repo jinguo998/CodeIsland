@@ -13,7 +13,7 @@ fn main() {
     let scratch = env::var_os("CODEISLAND_SWIFT_SCRATCH").map(PathBuf::from)
         .unwrap_or_else(|| output.join("swiftpm"));
     let profile = if env::var("PROFILE").unwrap() == "debug" { "debug" } else { "release" };
-    for input in ["Sources/CodeIslandCore", "Tests/CodeIslandCoreTests", "desktop/swift", "desktop/scripts/build-swift.py", "desktop/scripts/stage-swift-runtime.ps1"] {
+    for input in ["Sources/CodeIslandCore", "Sources/CodeIsland", "desktop/scripts/swift_sources.py", "Tests/CodeIslandCoreTests", "desktop/swift", "desktop/scripts/build-swift.py", "desktop/scripts/stage-swift-runtime.ps1"] {
         println!("cargo:rerun-if-changed={}", root.join(input).display());
     }
     assert_eq!(env::var("HOST"), env::var("TARGET"), "Build the Swift and Rust targets on the same host");

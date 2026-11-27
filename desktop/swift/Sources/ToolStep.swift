@@ -18,7 +18,7 @@ private struct Arguments: Decodable {
 
 func toolStep(_ input: Data) throws -> Data {
     let args = try JSONDecoder().decode(Arguments.self, from: input)
-    guard let event = try bridgeHook(input) else { return try JSONEncoder().encode(args.previous) }
+    guard let event = try bridgeHook(input, eventName: args.step, forDisplay: true) else { return try JSONEncoder().encode(args.previous) }
     var session = SessionSnapshot()
     session.status = args.previous.executing ? .running : .processing
     session.currentTool = args.previous.tool
@@ -26,7 +26,10 @@ func toolStep(_ input: Data) throws -> Data {
     session.toolDescription = args.previous.detail
     // This projection contains only the visible tool. The desktop event log
     // stores its own OS timestamp and event identity.
-    session.applyToolStep(event, eventName: args.step, maxHistory: 0)
+    let key = event.sessionId ?? "default"
+    var cards = [key: session]
+    _ = reduceHookEvent(sessions: &cards, event: event, maxHistory: 0)
+    session = cards[key] ?? session
     return try JSONEncoder().encode(ToolFields(tool: session.currentTool, detail: session.toolDescription,
                                                id: session.currentToolUseId, executing: session.status == .running))
 }

@@ -60,7 +60,7 @@ func pushTransportPolicy(_ operation: String, _ data: Data) throws -> Data {
     struct Failure: Decodable { let kind: PushEventKind; let status: Int?; let after: String?; let body: String }
     let args = try decoder.decode(Failure.self, from: data)
     let response = PushTransportResponse(statusCode: args.status, body: Data(args.body.utf8),
-                                        retryAfter: URLSessionPushTransport.retryAfter(args.after))
+                                        retryAfter: URLSessionPushTransport.desktopRetryAfter(args.after))
     let delay = PushRetryPolicy.retries(args.kind) ? PushRetryPolicy.delay(after: response) : nil
     return try encoder.encode(delay)
 }
@@ -100,8 +100,7 @@ private func desktopPushStrings(_ requested: String) -> PushStrings {
     let tag = requested == "system" ? Locale.preferredLanguages.first ?? "en" : requested
     let traditional = ["zh-Hant", "zh-TW", "zh-HK", "zh-MO"].contains(where: tag.hasPrefix)
     let language = traditional ? "zh-Hant" : String(tag.split(separator: "-").first ?? "en")
-    let table = PushLocalization.table(for: language)
-    var strings = PushLocalization.strings { table[$0] ?? $0 }
+    var strings = DesktopPushStrings.strings(L10n(language: language))
     if language == "tr" {
         strings.secretQuestion = "Hassas istem — bilgisayarınızda yanıtlayın."
         strings.answerOnMac = "Lütfen bilgisayarınızdan yanıt verin."
@@ -176,8 +175,13 @@ struct DesktopPushPolicy {
                 return try encoder.encode(dedup.admit(kind: e.kind, sessionId: e.session, requestKey: e.key, now: now) == nil)
             }
             dedup.window = PushDeduplicator().window
-            return try encoder.encode(PushThrottle.admit(kind: e.kind, sessionId: e.session, requestKey: e.key,
-                now: now, deduplicator: &dedup, globalLimiter: &global) == nil)
+            let mustDeliver = PushThrottle.mustDeliver(e.kind)
+            guard mustDeliver || global.nextSlot(now: now) <= now else { return try encoder.encode(false) }
+            guard dedup.admit(kind: e.kind, sessionId: e.session, requestKey: e.key, now: now) == nil else {
+                return try encoder.encode(false)
+            }
+            if !mustDeliver { global.record(now) }
+            return try encoder.encode(true)
         }
         struct Slot: Decodable { let channel: String; let mustDeliver: Bool; let now: Double; let waited: Double }
         let slot = try decoder.decode(Slot.self, from: data)

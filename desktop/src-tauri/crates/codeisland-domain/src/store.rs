@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
+use serde_json::{Value, json};
 
 use crate::approval::{ApprovalAlwaysScope, agent_keeps_always_rule, command_for_event, commands_match};
 use crate::ordering;
@@ -20,6 +21,19 @@ struct RemovedIdleGroup {
     members: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+struct CachedToolCall {
+    tool: Option<String>,
+    description: Option<String>,
+    input: Option<Value>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct ToolFields {
+    id: Option<String>,
+    input: Option<Value>,
+}
+
 pub struct RequestResolution {
     pub decision: Decision,
     pub approval_to_save: Option<PendingRequest>,
@@ -32,7 +46,7 @@ pub struct SessionStore {
     sessions: IndexMap<String, SessionSnapshot>,
     pending: IndexMap<String, PendingRequest>,
     removed_idle: IndexMap<String, Arc<RemovedIdleGroup>>,
-    tool_uses: HashMap<String, (Option<String>, Option<String>)>,
+    tool_uses: HashMap<(String, Option<String>, String), CachedToolCall>,
     manual_order: Vec<String>,
     seen_events: VecDeque<String>,
     seen_set: HashSet<String>,
@@ -640,7 +654,11 @@ impl SessionStore {
         });
         trim_history(&mut snapshot.history, self.history_limit);
         apply_transcript_metadata(&self.native, snapshot, event);
-        let tool_use_id = event_tool_use_id(event);
+        let fields: ToolFields = event.payload.as_ref().filter(|value| value.is_object())
+            .map(|row| codeisland_swift::call(c"tool.fields", row)).unwrap_or_default();
+        let tool_use_id = fields.id;
+        let tool_input = fields.input.as_ref();
+        let tool_key = tool_use_id.as_ref().map(|id| (session_id.clone(), event.agent_id.clone(), id.clone()));
         let native = crate::swift_session::reduce(&self.native, snapshot, event,
             tool_use_id.as_deref(), is_new_session, self.history_limit);
         if let Some(reduction) = &native {
@@ -653,9 +671,6 @@ impl SessionStore {
         } else {
             apply_hook_checklist(&self.native, snapshot, event);
         }
-        let tool_input = event.payload.as_ref().and_then(|payload| {
-            payload.get("tool_input").or_else(|| payload.get("toolInput"))
-        });
         let same_agent = |request: &PendingRequest| {
             request.session_id == event.session_id && request.agent_id == event.agent_id
         };
@@ -684,20 +699,17 @@ impl SessionStore {
                 | AgentEventType::UserPrompt
                 | AgentEventType::TurnEnd
         ) {
+            let original_input = tool_key.as_ref().and_then(|key| self.tool_uses.get(key))
+                .and_then(|call| call.input.as_ref());
             self.pending.retain(|_, request| {
-                let different_tool = event
-                    .tool
-                    .as_ref()
-                    .zip(request.tool.as_ref())
-                    .is_some_and(|(step, asked)| step != asked);
-                let different_input = tool_input
-                    .zip(request.tool_input.as_ref())
-                    .is_some_and(|(step, asked)| step != asked);
-                !(request.kind == RequestKind::Permission
-                    && request.tool_use_id.is_none()
-                    && same_agent(request)
-                    && !different_tool
-                    && !different_input)
+                if request.kind != RequestKind::Permission || request.tool_use_id.is_some() || !same_agent(request) {
+                    return true;
+                }
+                !codeisland_swift::call::<bool>(c"tool.hasPassed", json!({
+                    "step": { "agent": event.agent_id, "tool": event.tool, "input": tool_input },
+                    "request": { "agent": request.agent_id, "tool": request.tool, "input": request.tool_input },
+                    "original": original_input,
+                }))
             });
         }
 
@@ -752,22 +764,20 @@ impl SessionStore {
                 // A permission gate often arrives after the tool started with
                 // less detail; remember what we saw so the approval card can
                 // still name the tool and show its command.
-                if let Some(id) = tool_use_id.as_deref() {
-                    self.tool_uses.insert(
-                        tool_use_key(&event.session_id, id),
-                        (event.tool.clone(), event.text.clone()),
-                    );
+                if let Some(key) = tool_key {
+                    self.tool_uses.insert(key, CachedToolCall {
+                        tool: event.tool.clone(),
+                        description: event.text.clone(), input: tool_input.cloned(),
+                    });
                 }
             }
             AgentEventType::ToolEnd => {
                 if native.is_none() { crate::hook_tool::apply(snapshot, event, tool_use_id.as_deref()); }
                 if let Some(id) = tool_use_id.as_deref() {
-                    self.tool_uses
-                        .remove(&tool_use_key(&event.session_id, id));
-                    // Trae can finish the tool hook before its own approval
-                    // is answered; its PermissionDenied is still definitive.
-                    let keep_permission = event.agent == AgentKind::Trae
-                        && event.raw_event_name.as_deref() != Some("PermissionDenied");
+                    if let Some(key) = tool_key { self.tool_uses.remove(&key); }
+                    let keep_permission: bool = codeisland_swift::call(c"tool.keepsRequest", json!({
+                        "event": event.raw_event_name, "source": event.agent.tag(),
+                    }));
                     if !keep_permission
                         && let Some(index) = self.pending.values().position(|request| {
                             same_agent(request)
@@ -784,18 +794,15 @@ impl SessionStore {
                 self.pending.retain(|_, request| {
                     !(same_agent(request) && request.kind == RequestKind::Question)
                 });
-                let cached = tool_use_id
-                    .as_deref()
-                    .and_then(|id| self.tool_uses.get(&tool_use_key(&event.session_id, id)))
-                    .cloned();
+                let cached = tool_key.as_ref().and_then(|key| self.tool_uses.get(key));
                 let tool = event
                     .tool
                     .clone()
-                    .or_else(|| cached.as_ref().and_then(|(tool, _)| tool.clone()));
+                    .or_else(|| cached.and_then(|call| call.tool.clone()));
                 let body = event
                     .text
                     .clone()
-                    .or_else(|| cached.as_ref().and_then(|(_, text)| text.clone()));
+                    .or_else(|| cached.and_then(|call| call.description.clone()));
                 // Identical tool requests keep their queue position and
                 // dismissal. Parallel calls can share an id and differ in input.
                 let replay = tool_use_id.as_deref().and_then(|id| {
@@ -803,7 +810,9 @@ impl SessionStore {
                         (same_agent(request)
                             && request.kind == RequestKind::Permission
                             && request.tool_use_id.as_deref() == Some(id)
-                            && request.tool_input.as_ref() == tool_input)
+                            && codeisland_swift::call::<bool>(c"tool.sameInput", json!({
+                                "first": request.tool_input, "second": tool_input,
+                            })))
                             .then(|| (index, request.hidden, request.always_scope.clone(), request.approval_config.clone()))
                     })
                 });
@@ -1191,8 +1200,7 @@ impl SessionStore {
         let removed = self.sessions.shift_remove(session_id)?;
         self.native.call::<()>(c"session.remove", session_id);
         self.pending.retain(|_, request| request.session_id != session_id);
-        let tool_key = format!("{session_id}\u{1}");
-        self.tool_uses.retain(|key, _| !key.starts_with(&tool_key));
+        self.tool_uses.retain(|(card, _, _), _| card != session_id);
         self.manual_order.retain(|value| value != session_id);
         if let Some(parent) = removed.parent_session_id.as_deref()
             && let Some(session) = self.sessions.get_mut(parent)
@@ -1555,21 +1563,6 @@ fn replace_discovered(target: &mut Option<String>, value: Option<&str>, newest: 
     }
     *target = Some(value.to_owned());
     true
-}
-
-fn event_tool_use_id(event: &AgentEvent) -> Option<String> {
-    event.payload.as_ref().and_then(|payload| {
-        payload
-            .get("tool_use_id")
-            .or_else(|| payload.get("toolUseId"))
-            .and_then(|value| value.as_str())
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-    })
-}
-
-fn tool_use_key(session_id: &str, tool_use_id: &str) -> String {
-    format!("{session_id}\u{1}{tool_use_id}")
 }
 
 fn question_options(event: &AgentEvent) -> (Vec<String>, Vec<QuestionItem>) {

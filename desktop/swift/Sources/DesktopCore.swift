@@ -5,24 +5,29 @@ import Foundation
 // borrowed only during the callback, so neither runtime frees the other's heap.
 private final class DesktopContext {
     var reminders = FollowUpReminderScheduler()
+    // Revalidate an asynchronous push against the exact native delivery it received.
+    var pendingDeliveries: [FollowUpReminderScheduler.Key: FollowUpReminder] = [:]
     var quota = ClaudeQuotaScheduler()
     var usage = ClaudeUsageScanner.FileCache()
     var sessions = DesktopSessions()
     var cowork = CoworkAuditState()
     var cursor = CursorHookDeliveryFilter()
     var reconnect = RemoteReconnectPolicy()
+    var reachabilityUnknown = true
     var pushPolicy = DesktopPushPolicy()
-    var failureSounds = SoundDebouncer(window: EventSoundRouting.turnFailureWindow)
+    var failureSounds = DesktopSoundTiming()
 
     func copy() -> DesktopContext {
         let result = DesktopContext()
         result.reminders = reminders
+        result.pendingDeliveries = pendingDeliveries
         result.quota = quota
         result.usage = usage
         result.sessions = sessions
         result.cowork = cowork
         result.cursor = cursor
         result.reconnect = reconnect
+        result.reachabilityUnknown = reachabilityUnknown
         result.pushPolicy = pushPolicy
         result.failureSounds = failureSounds
         return result
@@ -75,7 +80,7 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
         return try codexMessage(op, data)
     case let operation where operation.hasPrefix("ssh."):
         guard let state else { throw BridgeError.missingContext }
-        return try reconnectOperation(operation, data, policy: &state.reconnect)
+        return try reconnectOperation(operation, data, policy: &state.reconnect, unknown: &state.reachabilityUnknown)
     case "codex.enableHooks":
         return try encoder.encode(CodexHooksConfig.enablingHooks(in: decoder.decode(String.self, from: data)))
     case "codex.prefixes", "codex.matches", "codex.scope", "codex.persist":
@@ -86,10 +91,11 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
         let delivery = try decoder.decode(Delivery.self, from: data)
         let date = Date(timeIntervalSince1970: Double(delivery.now) / 1_000_000)
         return try encoder.encode(state.cursor.isRepeat(digest: delivery.digest, now: date))
+    case "tool.fields", "tool.sameInput", "tool.keepsRequest", "tool.hasPassed": return try permissionToolCall(op, data)
     case "hook.admit", "hook.prepare": return try prepareHook(op, data)
     case "git.branch":
         let cwd = try decoder.decode(String.self, from: data)
-        return try encoder.encode(GitBranchReader.read(cwd: cwd, maxDepth: 64)?.branch)
+        return try encoder.encode(GitBranchReader.desktopBranch(cwd: cwd))
     case "companion.frames": return try companionFrames(data)
     case let operation where operation.hasPrefix("buddy."): return try buddy(operation, data)
     case "pushEndpoint":
@@ -118,12 +124,12 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
     case "sound.quiet":
         struct Clock: Decodable { let minute: Int; let start: Int; let end: Int }
         let clock = try decoder.decode(Clock.self, from: data)
-        return try encoder.encode(EventSoundRouting.isInQuietHours(minutesSinceMidnight: clock.minute, start: clock.start, end: clock.end))
+        return try encoder.encode(DesktopSoundTiming.isInQuietHours(minutesSinceMidnight: clock.minute, start: clock.start, end: clock.end))
     case "sound.failure":
         struct Hit: Decodable { let id: String; let millis: Int64 }
         guard let state else { throw BridgeError.missingContext }
         let hit = try decoder.decode(Hit.self, from: data)
-        return try encoder.encode(state.failureSounds.shouldPlay(key: hit.id, now: Date(timeIntervalSince1970: Double(hit.millis) / 1000)))
+        return try encoder.encode(state.failureSounds.shouldPlay(hit.id, now: Date(timeIntervalSince1970: Double(hit.millis) / 1000)))
     case "attention.intents", "attention.decide": return try attentionEvent(data, settle: op == "attention.decide")
     case "attention.settle": return try settleAttention(data)
     case "attention.hold": return try attentionHold(data)
@@ -167,13 +173,14 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
         let args = try decoder.decode(ScanArguments.self, from: data)
         let result = ClaudeUsageScanner.scan(claudeHomes: args.roots, now: args.date, cache: &state.usage)
         encoder.keyEncodingStrategy = .convertToSnakeCase
-        return try encoder.encode(state.usage.isEmpty ? nil : UsageReply(result))
+        return try encoder.encode(state.usage.hasScannedFiles ? UsageReply(result) : nil)
     case "fetchQuota":
         return try fetchQuota(in: decoder.decode(String.self, from: data))
     case "parseQuota":
         // Malformed provider responses are a normal client result.
         let snapshot = try? ClaudeQuotaSnapshot.parse(data)
-        return try encoder.encode(snapshot.map { $0.limits.map(QuotaRow.init) })
+        let limits = snapshot?.limits.filter { $0.percent.isFinite }
+        return try encoder.encode(limits.flatMap { $0.isEmpty ? nil : $0.map(QuotaRow.init) })
     default:
         guard let state else { throw BridgeError.missingContext }
         if op.hasPrefix("quota.") {
@@ -194,6 +201,7 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
             switch op {
             case "reminder.interval":
                 state.reminders.setInterval(try decoder.decode(Double?.self, from: data))
+                if !state.reminders.isEnabled { state.pendingDeliveries.removeAll() }
             case "reminder.enabled": return try encoder.encode(state.reminders.isEnabled)
             case "reminder.owed": return try encoder.encode(state.reminders.hasOwed)
             case "reminder.next": return try encoder.encode(state.reminders.nextWakeDate().map(microseconds))
@@ -204,31 +212,50 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
                 } else {
                     state.reminders.sync(kind: args.kind, origin: args.origin, waiting: Set(args.waiting.keys), now: args.date)
                 }
+                state.pendingDeliveries = state.pendingDeliveries.filter { key, item in
+                    guard state.reminders.origin(of: key) != nil else { return false }
+                    if key.kind == args.kind, let request = args.waiting[key.sessionId] ?? nil {
+                        return request == item.requestId
+                    }
+                    return true
+                }
             case "reminder.restart", "reminder.track":
                 let args = try decoder.decode(Track.self, from: data)
+                state.pendingDeliveries.removeValue(forKey: .init(args.kind, args.id))
                 if op == "reminder.restart" {
                     state.reminders.restart(kind: args.kind, sessionId: args.id, origin: .displayOnly, now: args.date)
                 } else {
                     state.reminders.track(kind: args.kind, sessionId: args.id, now: args.date, turnFailed: args.failed)
                 }
             case "reminder.silenceSession":
-                state.reminders.silenceAll(sessionId: try decoder.decode(String.self, from: data))
+                let id = try decoder.decode(String.self, from: data)
+                state.reminders.silenceAll(sessionId: id)
+                state.pendingDeliveries = state.pendingDeliveries.filter { $0.key.sessionId != id }
             case "reminder.silenceCompletion":
-                state.reminders.silence(.init(.completion, try decoder.decode(String.self, from: data)))
+                let key = FollowUpReminderScheduler.Key(.completion, try decoder.decode(String.self, from: data))
+                state.reminders.silence(key)
+                state.pendingDeliveries.removeValue(forKey: key)
             case "reminder.keepCompletions":
                 let keep = try decoder.decode(Set<String>.self, from: data)
                 for key in state.reminders.trackedKeys where key.kind == .completion && !keep.contains(key.sessionId) {
                     state.reminders.silence(key)
+                    state.pendingDeliveries.removeValue(forKey: key)
                 }
             case "reminder.current":
                 let item = try decoder.decode(ReminderRow.self, from: data)
-                return try encoder.encode(state.reminders.isCurrent(item.reminder))
+                return try encoder.encode(state.pendingDeliveries[item.nativeKey].map(ReminderRow.init) == item)
             case "reminder.postpone":
                 let args = try decoder.decode(Postpone.self, from: data)
-                state.reminders.postpone(args.item.reminder, now: args.date)
+                if let delivered = state.pendingDeliveries[args.item.nativeKey], ReminderRow(delivered) == args.item,
+                   delivered.delivery != .deferred {
+                    state.reminders.postpone(delivered, now: args.date)
+                    state.pendingDeliveries.removeValue(forKey: args.item.nativeKey)
+                }
             case "reminder.collect":
                 let args = try decoder.decode(Collect.self, from: data)
-                return try encoder.encode(state.reminders.collectDue(now: args.date, heldBack: args.held).map(ReminderRow.init))
+                let due = state.reminders.collectDue(now: args.date, heldBack: args.held)
+                for item in due { state.pendingDeliveries[.init(item.kind, item.sessionId)] = item }
+                return try encoder.encode(due.map(ReminderRow.init))
             default: throw BridgeError.unknownOperation(op)
             }
         }
@@ -276,8 +303,8 @@ private struct Track: Decodable, Timed {
 private struct Collect: Decodable, Timed { let now: Int64; let held: Bool }
 private struct Postpone: Decodable, Timed { let now: Int64; let item: ReminderRow }
 
-private struct ReminderRow: Codable {
-    struct Key: Codable {
+private struct ReminderRow: Equatable, Codable {
+    struct Key: Equatable, Codable {
         let kind: FollowUpReminderKind
         let session_id: String
     }
@@ -299,12 +326,7 @@ private struct ReminderRow: Codable {
         turn_failed = item.turnFailed
     }
 
-    var reminder: FollowUpReminder {
-        FollowUpReminder(kind: key.kind, sessionId: key.session_id, attempt: attempt,
-                         maxAttempts: key.kind.maxAttempts,
-                         waitingSince: Date(timeIntervalSince1970: Double(waiting_since) / 1_000_000),
-                         delivery: delivery, origin: origin, requestId: request_id, turnFailed: turn_failed)
-    }
+    var nativeKey: FollowUpReminderScheduler.Key { .init(key.kind, key.session_id) }
 }
 
 private struct ModelArguments: Decodable {
@@ -317,14 +339,30 @@ private struct ScanArguments: Decodable, Timed {
     let now: Int64
 }
 
+private struct UsageCounts: Encodable {
+    let inputTokens: Int
+    let outputTokens: Int
+    let cacheCreationTokens: Int
+    let cacheReadTokens: Int
+    let messageCount: Int
+
+    init(_ totals: ClaudeUsageTotals) {
+        inputTokens = totals.inputTokens
+        outputTokens = totals.outputTokens
+        cacheCreationTokens = totals.cacheCreationTokens
+        cacheReadTokens = totals.cacheReadTokens
+        messageCount = totals.messageCount
+    }
+}
+
 private struct UsageReply: Encodable {
-    let last_5h: ClaudeUsageTotals
-    let today: ClaudeUsageTotals
+    let last_5h: UsageCounts
+    let today: UsageCounts
     let hourlyOutputTokens: [Int]
 
     init(_ scan: ClaudeUsageScanner.Snapshot) {
-        last_5h = scan.last5h
-        today = scan.today
+        last_5h = UsageCounts(scan.last5h)
+        today = UsageCounts(scan.today)
         hourlyOutputTokens = scan.hourlyOutputTokens
     }
 }
@@ -343,7 +381,7 @@ private struct PushTextArguments: Decodable {
     let markdown: Bool
 }
 
-func bridgeHook(_ data: Data) throws -> HookEvent? {
+func bridgeHook(_ data: Data, eventName: String? = nil, forDisplay: Bool = false) throws -> HookEvent? {
     guard let arguments = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
     var payload = arguments["payload"] as? [String: Any] ?? [:]
     // The Windows hook may receive its event and tool name as CLI arguments.
@@ -359,5 +397,17 @@ func bridgeHook(_ data: Data) throws -> HookEvent? {
         payload["last_assistant_message"] = arguments["answer"] as? String
     }
     if let card = arguments["card"] as? String, payload["session_id"] == nil { payload["session_id"] = card }
-    return HookEvent(json: payload, cardSessionId: arguments["card"] as? String)
+    if let eventName { payload["hook_event_name"] = eventName }
+    guard let event = HookEvent(json: payload) else { return nil }
+    guard forDisplay else { return event }
+    if var input = event.toolInput {
+        for key in ["file_path", "AbsolutePath", "TargetFile", "SearchPath", "path", "filePath"] {
+            if let path = input[key] as? String { input[key] = DesktopPath.withForwardSlashes(path) }
+        }
+        payload["tool_input"] = input
+    }
+    if let path = payload["transcript_path"] as? String {
+        payload["transcript_path"] = DesktopPath.withForwardSlashes(path)
+    }
+    return HookEvent(json: payload)
 }

@@ -18,7 +18,8 @@ private struct Metadata: Encodable {
         cli_id = value.cliSessionId
         title = value.displayTitle
         initial_prompt = value.initialMessage
-        host_cwd = value.hostCwd
+        host_cwd = value.userSelectedFolders.first { $0.hasPrefix("/") || DesktopPath.isWindowsAbsolute($0) }
+            ?? value.hostCwd ?? value.cwd.flatMap { DesktopPath.isWindowsAbsolute($0) ? $0 : nil }
         model = value.model
         created_at = value.createdAt.map(microseconds)
         last_activity = value.lastActivityAt.map(microseconds)
