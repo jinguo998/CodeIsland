@@ -177,8 +177,11 @@ def main():
         base += ["--jobs", jobs]
     if args.action == "test":
         if os.name == "nt":
-            # The upstream subprocess fixture launches /bin/sh and exercises Unix pipes.
-            base += ["--skip", "CodexAppServerClientTests.testProcessExitDisarmsReadabilityHandlers"]
+            # The upstream lifecycle fixture launches /bin/sh. SwiftPM's serial
+            # --skip runner puts every remaining test in one Windows command line.
+            # One worker keeps tests sequential and launches each by its own name.
+            base += ["--parallel", "--num-workers", "1",
+                     "--skip", "CodexAppServerClientTests/testProcessExitDisarmsReadabilityHandlers$"]
         subprocess.run(base, check=True)
     else:
         subprocess.run(base + ["--product", "CodeIslandDesktopCore"], check=True, stdout=sys.stderr)
