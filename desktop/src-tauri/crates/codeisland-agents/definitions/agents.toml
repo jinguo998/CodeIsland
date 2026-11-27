@@ -214,7 +214,7 @@ source = "google-antigravity"
 executables = ["agy"]
 config = [".gemini/config/hooks.json"]
 format = "generic_json"
-response = "plain"
+response = "gemini"
 icon = "antigravity"
 
 # ── Kiro ─────────────────────────────────────────────────────────────────────

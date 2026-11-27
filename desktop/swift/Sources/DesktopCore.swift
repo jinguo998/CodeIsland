@@ -94,6 +94,10 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
         return try encoder.encode(state.cursor.isRepeat(digest: delivery.digest, now: date))
     case "tool.fields", "tool.sameInput", "tool.keepsRequest", "tool.hasPassed": return try permissionToolCall(op, data)
     case "hook.admit", "hook.prepare": return try prepareHook(op, data)
+    case "lan.digest":
+        struct Digest: Decodable { let key: [UInt8]?; let message: [UInt8] }
+        let args = try decoder.decode(Digest.self, from: data)
+        return try encoder.encode(DesktopLANDigest.bytes(args.message, key: args.key))
     case "desktop.animation":
         return try encoder.encode(NotchAnimationSpeed.clamped((try decoder.decode(Double?.self, from: data)) ?? NotchAnimationSpeed.normal))
     case "desktop.diagnostics":
@@ -109,6 +113,7 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
         guard let event = try bridgeHook(data) else { return try encoder.encode(false) }
         return try encoder.encode(RemovedSessionRevivalEvidence.forHookEvent(event,
             normalizedEventName: EventNormalizer.normalize(event.eventName)) != .passive)
+    case "desktop.cardShortcut": return try DesktopCardShortcut.route(data)
     case "session.project":
         var session = SessionSnapshot()
         session.cwd = try DesktopPath.withForwardSlashes(decoder.decode(String.self, from: data))

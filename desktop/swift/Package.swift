@@ -1,6 +1,13 @@
 // swift-tools-version: 5.9
 import PackageDescription
 
+// Swift 6.2.3 emits a reference to a private FoundationCollections index
+// descriptor for unoptimized AttributedString.runs on Windows (swift#88132).
+// Optimized collection iteration uses the SDK's exported accessors.
+let windowsAttributedString: [SwiftSetting] = [
+    .unsafeFlags(["-O"], .when(platforms: [.windows], configuration: .debug)),
+]
+
 // build-swift.py assembles this package in the build directory from the same
 // source and test files as the macOS target, without resolving its UI packages.
 let package = Package(
@@ -17,11 +24,12 @@ let package = Package(
             .target(name: "SQLite3", condition: .when(platforms: [.windows, .linux])), .target(name: "CryptoKit", condition: .when(platforms: [.windows, .linux])),
             .product(name: "cmark-gfm-extensions", package: "swift-cmark", condition: .when(platforms: [.windows, .linux])),
             .product(name: "cmark-gfm", package: "swift-cmark", condition: .when(platforms: [.windows, .linux])),
-        ], linkerSettings: [
+        ], swiftSettings: windowsAttributedString, linkerSettings: [
             .linkedLibrary("winsqlite3", .when(platforms: [.windows])),
             .linkedLibrary("sqlite3", .when(platforms: [.linux, .macOS])),
         ]),
         .target(name: "CodeIslandDesktopCore", dependencies: ["CodeIslandCore", .target(name: "SQLite3", condition: .when(platforms: [.windows, .linux]))]),
-        .testTarget(name: "CodeIslandCoreTests", dependencies: ["CodeIslandCore"]),
+        .testTarget(name: "CodeIslandCoreTests", dependencies: ["CodeIslandCore", "CodeIslandDesktopCore"],
+            swiftSettings: windowsAttributedString),
     ]
 )

@@ -124,13 +124,7 @@ impl AgentDefinition {
     /// across releases and lets uninstall/health checks recognize our entries
     /// even when the hook executable path changes.
     pub fn marker(&self) -> String {
-        if self.agent == AgentKind::Unknown {
-            // Custom CLIs all share `Unknown`; their own source keeps the
-            // markers distinct.
-            format!("codeisland-{}", self.source)
-        } else {
-            format!("codeisland-{}", self.agent.tag())
-        }
+        format!("codeisland-{}", self.source)
     }
 
     /// Build a definition for a user-defined CLI from Settings.
@@ -353,7 +347,7 @@ fn tool_root(paths: &crate::paths::Paths, path: &std::path::Path) -> Option<std:
 /// by [`kind_for_source`], so `--source qoder-cli` and `--source factory`
 /// resolve to the same definitions as `qoder` and `droid`.
 pub fn definition_for_source(source: &str) -> Option<&'static AgentDefinition> {
-    let source = source.trim();
+    let source = without_marker(source.trim());
     if source.is_empty() {
         return None;
     }
@@ -363,7 +357,9 @@ pub fn definition_for_source(source: &str) -> Option<&'static AgentDefinition> {
     {
         return Some(def);
     }
-    definition(kind_for_source(source))
+    let canonical: Option<String> = codeisland_swift::call(c"hook.source", serde_json::json!({"source": source}));
+    definitions().iter().find(|d| Some(&d.source) == canonical.as_ref())
+        .or_else(|| definition(kind_for_source(source)))
 }
 
 /// Installed commands pass the per-agent marker as `--source` so the command
@@ -416,6 +412,10 @@ mod tests {
 
     #[test]
     fn source_aliases_resolve() {
+        for source in ["omp", "google-antigravity", "traecli-next"] {
+            let marker = format!("codeisland-{source}");
+            assert_eq!(definition_for_source(&marker).unwrap().source, source);
+        }
         assert_eq!(
             definition_for_source("qoder-cli").map(|d| d.agent),
             Some(AgentKind::Qoder)

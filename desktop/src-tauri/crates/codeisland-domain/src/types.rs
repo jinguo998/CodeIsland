@@ -576,6 +576,10 @@ pub struct PendingRequest {
     #[serde(default)]
     pub agent: AgentKind,
     pub kind: RequestKind,
+    /// The provider owning a permission rule can be more specific than the UI agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(skip)]
+    pub hook_source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -470,30 +470,37 @@ impl Runtime {
     ) -> CardShortcutOutcome {
         let mut store = lock(&self.store);
         let island = read_lock(&self.island);
+        let current = island.surface.current_request(&store);
+        let visible = |kind| visible_requests(&store, kind).map(|r| r.session_id.as_str()).collect::<Vec<_>>();
+        #[derive(Deserialize)]
+        struct Effect { action: String, session: Option<String> }
+        let effect: Effect = codeisland_swift::call(c"desktop.cardShortcut", serde_json::json!({
+            "action": shortcut.native_name(), "rendered": island_on_screen && island.card_rendered,
+            "current": current.map(|r| r.session_id.as_str()), "kind": current.map(|r| r.kind),
+            "permissions": visible(RequestKind::Permission), "questions": visible(RequestKind::Question),
+        }));
+        let Some(session) = effect.session.as_deref() else { return CardShortcutOutcome::Ignored };
         let kind = shortcut.request_kind();
-        if let Some(request) = island
-            .surface
-            .current_request(&store)
-            .filter(|request| request.kind == kind)
-        {
-            if !island_on_screen || !island.card_rendered {
-                return CardShortcutOutcome::Opened(island.surface.clone());
-            }
-            let event_id = request.event_id.clone();
-            let decision = store.resolve_with_coverage(&event_id, shortcut.decision(), None);
-            drop(island);
-            drop(store);
-            if let Some(decision) = decision {
-                self.complete_resolution(decision);
-                return CardShortcutOutcome::Acted;
-            }
-            return CardShortcutOutcome::Ignored;
+        if effect.action == "open" {
+            return visible_requests(&store, kind).find(|r| r.session_id == session)
+                .map(|r| CardShortcutOutcome::Opened(IslandSurface::for_request(r)))
+                .unwrap_or(CardShortcutOutcome::Ignored);
         }
-        let outcome = visible_requests(&store, kind)
-            .next()
-            .map(|request| CardShortcutOutcome::Opened(IslandSurface::for_request(request)))
-            .unwrap_or(CardShortcutOutcome::Ignored);
-        outcome
+        let Some(request) = current.filter(|r| r.kind == kind && r.session_id == session) else {
+            return CardShortcutOutcome::Ignored;
+        };
+        let Ok(action) = serde_json::from_value::<UserAction>(serde_json::Value::String(effect.action)) else {
+            return CardShortcutOutcome::Ignored;
+        };
+        let event_id = request.event_id.clone();
+        let decision = store.resolve_with_coverage(&event_id, action, None);
+        drop(island);
+        drop(store);
+        if let Some(decision) = decision {
+            self.complete_resolution(decision);
+            return CardShortcutOutcome::Acted;
+        }
+        CardShortcutOutcome::Ignored
     }
 
     /// Validates, applies and persists new settings.

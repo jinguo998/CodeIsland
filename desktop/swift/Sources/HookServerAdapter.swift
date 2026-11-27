@@ -128,8 +128,7 @@ private func desktopAnswer(_ event: HookEvent, args: [String: Any]) -> Data {
         format == "notification" && (question || notification && action == "answer") {
         let isPermission = format == "claude" && (!notification || event.toolInput != nil)
         if denied { return DesktopHookAnswers.skip(isPermission: isPermission) }
-        let first = (event.toolInput?["questions"] as? [[String: Any]])?.first
-        let key = first?["header"] as? String ?? first?["question"] as? String ?? "answer"
+        let key = DesktopHookAnswers.askItems(event).first?.answerKey ?? "answer"
         let choices = try? JSONDecoder().decode([String: String].self, from: Data(answer.utf8))
         return DesktopHookAnswers().question(.init(event: event, isFromPermission: isPermission), answer,
             answers: choices.flatMap { $0.isEmpty ? nil : $0 } ?? [key: answer])

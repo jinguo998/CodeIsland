@@ -4,11 +4,10 @@ import Foundation
 // to the current call so independent hooks never share mutable preferences.
 public enum DesktopSourcePreferences {
     @TaskLocal public static var customCLIs: Data?
-    static let standard = SelfAdapter()
-    struct SelfAdapter {
+    static let standard = Preferences()
+    struct Preferences {
         func data(forKey key: String) -> Data? {
-            if key == SessionSnapshot.customCLIConfigsKey, let values = DesktopSourcePreferences.customCLIs { return values }
-            return Foundation.UserDefaults.standard.data(forKey: key)
+            key == SessionSnapshot.customCLIConfigsKey ? DesktopSourcePreferences.customCLIs : nil
         }
     }
 }
@@ -160,4 +159,13 @@ public func fillMissingParentMetadataFromSubagentEvent(
 ) {
     NativeHookMetadata().fillMissingParentMetadataFromSubagentEvent(into: &sessions, sessionId: sessionId,
                                                                      event: NativeHookMetadata.withVolume(event))
+}
+
+import CryptoKit
+
+public enum DesktopLANDigest {
+    public static func bytes(_ message: [UInt8], key: [UInt8]?) -> [UInt8] {
+        if let key { return Array(HMAC<SHA256>.authenticationCode(for: Data(message), using: SymmetricKey(data: key))) }
+        return Array(SHA256.hash(data: message))
+    }
 }

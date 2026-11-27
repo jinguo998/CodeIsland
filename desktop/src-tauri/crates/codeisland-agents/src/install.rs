@@ -1388,16 +1388,21 @@ fn render_traecli_managed_items(
 ) -> Vec<String> {
     let pad = " ".repeat(indent);
     let mut block = vec![format!("{pad}{YAML_START}")];
-    for event in &def.events {
-        block.push(format!("{pad}- type: command"));
-        block.push(format!(
-            "{pad}  command: {}",
-            yaml_scalar(&command_for(&event.name))
-        ));
-        block.push(format!("{pad}  timeout: '{}s'", timeout_secs(event)));
-    }
+    block.extend(traecli_commands(def, command_for, indent));
     block.push(format!("{pad}{YAML_END}"));
     block
+}
+
+fn traecli_commands(def: &AgentDefinition, command_for: &dyn Fn(&str) -> String, indent: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let pad = " ".repeat(indent);
+    for event in &def.events {
+        let block: String = codeisland_swift::call(c"install.traeCommand", json!({
+            "event": event.name, "timeout": timeout_secs(event), "command": command_for(&event.name),
+        }));
+        lines.extend(block.lines().map(|line| format!("{pad}{}", line.strip_prefix("  ").unwrap_or(line))));
+    }
+    lines
 }
 
 pub fn remove_yaml_block_text(existing: &str) -> String {
@@ -1429,15 +1434,7 @@ pub fn remove_yaml_block_text(existing: &str) -> String {
 fn render_yaml_block(def: &AgentDefinition, command_for: &dyn Fn(&str) -> String) -> String {
     let mut lines = vec![YAML_START.to_owned(), "hooks:".to_owned()];
     if def.agent == AgentKind::TraeCli {
-        // Trae CLI's hooks list is a flat array of command items.
-        for event in &def.events {
-            lines.push("  - type: command".to_owned());
-            lines.push(format!(
-                "    command: {}",
-                yaml_scalar(&command_for(&event.name))
-            ));
-            lines.push(format!("    timeout: '{}s'", timeout_secs(event)));
-        }
+        lines.extend(traecli_commands(def, command_for, 2));
     } else {
         // Hermes uses a map of event name -> command list.
         for event in &def.events {
@@ -1764,6 +1761,8 @@ fn entry_is_ours(entry: &Value, def: &AgentDefinition) -> bool {
 fn command_is_ours(command: &str, def: &AgentDefinition) -> bool {
     let marker = def.marker();
     command.contains(&marker)
+        || (def.agent != AgentKind::Unknown && command.split_ascii_whitespace()
+            .any(|arg| arg == format!("codeisland-{}", def.agent.tag())))
         || (command.contains("codeisland-hook")
             && (command.contains(&format!("--source {marker}"))
                 || command.contains(&format!("--source {}", def.source))))

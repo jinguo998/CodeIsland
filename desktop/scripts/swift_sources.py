@@ -127,6 +127,11 @@ def app_selections(root):
         "    static func approvedSources(_ raw: String) -> Set<String> {\n" +
             settings.part("    var autoApproveSources:", "            let entries = raw.split", "        set {"))
     state = source("AppState")
+    shortcuts = source("AppState+CardShortcuts")
+    yield "CardShortcut", (APP + source("IslandSurface").section()
+        + source("Settings").section("enum ShortcutAction:", "    var defaultBinding: ShortcutBinding?") + "}\n"
+        + namespace("extension DesktopCardShortcut", shortcuts.decl("    enum CardShortcutOutcome:"),
+            shortcuts.decl("    func performCardShortcut(")))
     intake = Source(root, "Sources/CodeIslandCore/HookIntake.swift")
     yield "AnswerTransport", APP + namespace("struct DesktopAnswerTransport",
         "    let waitsForAnswer: Bool\n    let answerFormat: HookIntake.AnswerFormat\n",
@@ -156,6 +161,30 @@ def app_selections(root):
         "    static func encode(_ event: HookEvent, defaults: DesktopWebhookFilter, emit: (Data) -> Void) {\n" +
         server.section("        let normalizedName = EventNormalizer.normalize(event.eventName)", "        var request = URLRequest") +
         "        emit(body)\n    }\n")
+    remote = source("RemoteInstaller")
+    remote_helpers = (
+        "_codex_home", "_claude_config_dir", "_display_path",
+        "strip_json_comments", "ensure_jsonc_object", "write_opencode_config",
+        "append_our_hooks", "_normalize_traecli_hooks_list_indentation", "_detect_traecli_hook_item_indent",
+        "_render_managed_traecli_hooks", "_parse_yaml_scalar", "_codex_toml_string",
+        "_codex_toml_statements", "_codex_toml_key", "_codex_toml_tail",
+        "_codex_is_features_header", "_codex_without_appended_features", "_codex_hooks_toml",
+    )
+    literals = []
+    for name in remote_helpers:
+        first = remote.index(f"def {name}(")
+        last = first + 1
+        while last < len(remote.lines) and (not remote.lines[last].strip() or remote.lines[last][0].isspace()):
+            last += 1
+        body = "".join(remote.lines[first:last]).rstrip()
+        # The Swift compiler interprets the same literal escapes as the original.
+        literals.append('"""\n' + body + '\n"""')
+    yield "RemoteInstaller", FOUNDATION + namespace("enum DesktopRemoteInstaller",
+        "    static let helpers = [" + ",\n".join(literals) + '].joined(separator: "\\n\\n")\n',
+        remote.decl("    static func shellWord("), remote.decl("    static func quotedLiteral("),
+        remote.line("    static let remoteSocketBase"), remote.decl("    static func loginUID("),
+        remote.decl("    private static func isUID("), remote.decl("    static func socketOwnerUID("),
+        remote.decl("    static func remoteOpencodePluginForInstall("), remote.decl("    private static func jsonStringLiteral("))
     installer = source("ConfigInstaller")
     yield "JSONMinimalEditor", source("JSONMinimalEditor").section()
     yield "InstallerCatalog", (APP + installer.decl("enum HookFormat {") + installer.decl("struct CLIConfig {") +
@@ -165,8 +194,13 @@ def app_selections(root):
             installer.line("    static let mimoPluginSourceMarker"), installer.line("    static let mimoPluginSourceLine"),
             installer.decl("    static func mimoPluginSource("),
             installer.line("    private static let minimaxManifestMarker"), installer.decl("    static func minimaxManifestDocument("),
-            installer.decl("    static func stripJSONComments("), installer.decl("    static func versionAtLeast("),
+            installer.decl("    static func stripJSONComments("),
             installer.decl("    static func mergeOpencodePluginRef("), installer.decl("    static func removeOpencodePluginRef("),
+            "    static func traeCommand(event: String, timeout: Int, command: String) -> String {\n" +
+            """        let escapedCommand = command.replacingOccurrences(of: "'", with: "''")
+        let events = [(event, timeout, false)]
+""" + installer.part("    private static func renderManagedTraecliHooksText(", "        let timeout =", "        return lines.joined") +
+            '        return lines.joined(separator: "\\n")\n    }\n',
             "    static func kimiBlock(event: String, timeout: Int, baseCommand: String) -> String {\n" +
             installer.part("    internal static func installKimiHooks(", "            var block =", "            hookBlocks.append(block)") +
             "        return block\n    }\n",
@@ -244,6 +278,9 @@ def app_selections(root):
 
 
 def test_selections(root):
+    for name in ("HookServerCwdFilterTests", "RemoteCwdFilterTests"):
+        case = Source(root, f"Tests/CodeIslandTests/{name}.swift")
+        yield name, "import XCTest\n@testable import CodeIslandDesktopCore\n" + case.section("final class ")
     def source(name):
         return Source(root, f"Tests/CodeIslandCoreTests/{name}.swift")
     q = source("ClaudeQuotaTests")

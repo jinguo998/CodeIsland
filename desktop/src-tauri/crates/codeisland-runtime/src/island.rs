@@ -1,4 +1,4 @@
-use codeisland_domain::{PendingRequest, RequestKind, SessionStore, UserAction};
+use codeisland_domain::{PendingRequest, RequestKind, SessionStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -88,12 +88,12 @@ impl CardShortcut {
         }
     }
 
-    pub(crate) fn decision(self) -> UserAction {
+    pub(crate) fn native_name(self) -> &'static str {
         match self {
-            Self::Approve => UserAction::Approve,
-            Self::AlwaysAllow => UserAction::AlwaysAllow,
-            Self::Deny => UserAction::Deny,
-            Self::SkipQuestion => UserAction::Skip,
+            Self::Approve => "approve",
+            Self::AlwaysAllow => "approveAlways",
+            Self::Deny => "deny",
+            Self::SkipQuestion => "skipQuestion",
         }
     }
 }

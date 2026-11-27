@@ -11,6 +11,21 @@ func installerOperation(_ operation: String, _ data: Data) throws -> Data {
         }
     }
     switch operation {
+    case "install.remoteScript":
+        let template = try decoder.decode(String.self, from: data)
+        return try encoder.encode(template.replacingOccurrences(of: "# @codeisland-swift-remote-helpers@",
+            with: DesktopRemoteInstaller.helpers))
+    case "install.shellWord":
+        return try encoder.encode(DesktopRemoteInstaller.shellWord(decoder.decode(String.self, from: data)))
+    case "install.remotePlugin":
+        struct Args: Decodable { let source: String; let id: String; let name: String; let socket: String; let hook: String }
+        let args = try decoder.decode(Args.self, from: data)
+        let host = RemoteHost(id: args.id, name: args.name, host: "")
+        let source = DesktopRemoteInstaller.remoteOpencodePluginForInstall(source: args.source, host: host, remoteSocketPath: args.socket)
+        // The Windows tunnel owns a per-host hook directory on the remote machine.
+        let original = #"const HOOK_PATH = `${process.env.HOME}/.codeisland/codeisland-remote-hook.py`;"#
+        let configured = "const HOOK_PATH = " + DesktopRemoteInstaller.quotedLiteral(args.hook) + ";"
+        return try encoder.encode(source.replacingOccurrences(of: original, with: configured))
     case "install.events":
         let entries = Dictionary(uniqueKeysWithValues: ConfigInstaller.desktopCLIs.map {
             ($0.source, eventList($0.events, source: $0.source))
@@ -52,9 +67,12 @@ func installerOperation(_ operation: String, _ data: Data) throws -> Data {
         struct Entry: Decodable { let command: String; let timeout: Int }
         let entry = try decoder.decode(Entry.self, from: data)
         return try JSONSerialization.data(withJSONObject: ConfigInstaller.zcodeEntry(command: entry.command, timeout: entry.timeout), options: .sortedKeys)
-    case "install.kimiBlock":
+    case "install.kimiBlock", "install.traeCommand":
         struct Entry: Decodable { let event: String; let timeout: Int; let command: String }
         let entry = try decoder.decode(Entry.self, from: data)
+        if operation == "install.traeCommand" {
+            return try encoder.encode(ConfigInstaller.traeCommand(event: entry.event, timeout: entry.timeout, command: entry.command))
+        }
         return try encoder.encode(ConfigInstaller.kimiBlock(event: entry.event, timeout: entry.timeout, baseCommand: entry.command))
     case "install.stripComments":
         return try encoder.encode(ConfigInstaller.stripJSONComments(decoder.decode(String.self, from: data)))

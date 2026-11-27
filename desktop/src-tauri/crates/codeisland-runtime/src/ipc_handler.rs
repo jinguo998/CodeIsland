@@ -203,6 +203,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn named_pipe_applies_native_origin_and_question_routing() {
+        let runtime = runtime();
+        let call = |payload| ClientMessage::Hook { v: PROTOCOL_VERSION, id: "raw".into(), payload, timeout_ms: Some(10) };
+        for rejected in [
+            json!({"hook_event_name":"SessionStart","session_id":"spoof","_remote_host_id":"test"}),
+            json!({"session_id":"bad"}),
+            json!({"hook_event_name":"PermissionRequest","session_id":"no-listener","tool_name":"Read",
+                   "_edge":{"source":"claude","waits":false}}),
+        ] {
+            assert!(matches!(handle_message(runtime.clone(), call(rejected)).await, Some(ServerMessage::Ack { .. })));
+        }
+        assert!(runtime.state().store.sessions.is_empty());
+        let hook = RoutedHook::receive(json!({"hook_event_name":"PermissionRequest","session_id":"multi",
+            "tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Pick","header":"One"},
+            {"question":"Pick","header":"Two"}]}}), None).unwrap();
+        let (_, event) = hook.into_event();
+        assert!(event.waits);
+        assert_eq!(event.event_type, AgentEventType::Question);
+        let questions = &event.payload.unwrap()["questions"];
+        assert_eq!(questions[0]["answer_key"], "Pick");
+        assert_eq!(questions[1]["answer_key"], "Pick_2");
+    }
+
+    #[tokio::test]
     async fn remote_hook_uses_bound_host_and_excludes_unrelated_directories() {
         let runtime = Runtime::new_for_test(AppSettings {
             remote_hosts: vec![codeisland_domain::RemoteHostSetting {

@@ -156,7 +156,7 @@ mod manager {
     const MAX_BUFFERED_BYTES: usize = 8 * 1024 * 1024;
     const READ_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
     const READ_DEADLINE: Duration = Duration::from_secs(300);
-    const INSTALLER: &[u8] = include_bytes!("../resources/codeisland-remote-install.py");
+    const INSTALLER: &str = include_str!("../resources/codeisland-remote-install.py");
     const PREPARE_SOCKET: &str = r#"
 import errno, os, socket, stat, sys
 uid = os.getuid()
@@ -482,28 +482,16 @@ print(path)
         }
 
         fn render_opencode_plugin(&self, source: &str, hook_path: &str, socket_path: &str) -> String {
-            let mut script = String::new();
-            for line in source.lines() {
-                let replacement = [
-                    ("HOOK_PATH", hook_path),
-                    ("SOCKET_PATH", socket_path),
-                    ("REMOTE_HOST_ID", self.host.id.as_str()),
-                    ("REMOTE_HOST_NAME", self.host.name.as_str()),
-                    ("SOCKET_OWNER_UID", ""),
-                ].into_iter().find(|(name, _)| line.starts_with(&format!("const {name} = ")));
-                if let Some((name, value)) = replacement {
-                    script.push_str(&format!("const {name} = {};\n", serde_json::json!(value)));
-                } else {
-                    script.push_str(line);
-                    script.push('\n');
-                }
-            }
-            script
+            codeisland_swift::call(c"install.remotePlugin", serde_json::json!({
+                "source": source, "hook": hook_path, "socket": socket_path,
+                "id": self.host.id, "name": self.host.name,
+            }))
         }
 
         async fn run_installer(&self, dir: &str, request: serde_json::Value) -> Result<String, SshError> {
             let installer = format!("{dir}/.remote-installer-{}.py", self.host_key());
-            self.stage_file(&installer, INSTALLER, "600").await?;
+            let script: String = codeisland_swift::call(c"install.remoteScript", INSTALLER);
+            self.stage_file(&installer, script.as_bytes(), "600").await?;
             let command = format!("python3 {} {}", shell_quote(&installer), shell_quote(&request.to_string()));
             let output = self.exec(&format!(r#""${{SHELL:-/bin/sh}}" -lc {}"#, shell_quote(&command))).await?;
             output.lines().rev().find_map(|line| {
@@ -966,14 +954,7 @@ print(path)
     }
 
     fn shell_quote(value: &str) -> String {
-        if !value.is_empty()
-            && value
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || "@%+=:,./_-".contains(ch))
-        {
-            return value.to_owned();
-        }
-        format!("'{}'", value.replace('\'', "'\\''"))
+        codeisland_swift::call(c"install.shellWord", value)
     }
 }
 

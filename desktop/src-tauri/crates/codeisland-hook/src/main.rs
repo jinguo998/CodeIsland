@@ -154,7 +154,11 @@ fn run_send(args: &[String]) -> i32 {
 /// A v1 server rejects an unknown message kind before dispatch. Only that
 /// explicit rejection can be retried without delivering a live approval twice.
 fn send_hook(message: ClientMessage, connect: Duration, read: Duration) -> std::io::Result<ServerMessage> {
-    let response = client::send(&message, connect, read)?;
+    deliver_hook(message, |frame| client::send(frame, connect, read))
+}
+
+fn deliver_hook(message: ClientMessage, mut send: impl FnMut(&ClientMessage) -> std::io::Result<ServerMessage>) -> std::io::Result<ServerMessage> {
+    let response = send(&message)?;
     if !matches!(&response, ServerMessage::Error { id, error, .. }
         if id.is_empty() && error.starts_with("invalid message: unknown variant `hook`")) {
         return Ok(response);
@@ -164,7 +168,7 @@ fn send_hook(message: ClientMessage, connect: Duration, read: Duration) -> std::
     let name = payload["hook_event_name"].as_str().unwrap_or("").to_owned();
     let event = codeisland_agents::normalize::project_wire(&source, &name, payload);
     let waits = event.waits;
-    client::send(&ClientMessage::Event { v, id, source, event, waits, timeout_ms }, connect, read)
+    send(&ClientMessage::Event { v, id, source, event, waits, timeout_ms })
 }
 
 /// Reply printed when there is no decision. Claude, Codex, Gemini and Cursor
@@ -469,5 +473,36 @@ mod tests {
     #[test]
     fn parent_process_id_is_nonzero() {
         assert_ne!(parent_process_id(), 0);
+    }
+
+    #[test]
+    fn only_an_old_servers_pre_dispatch_rejection_retries_the_same_request() {
+        let hook = ClientMessage::Hook { v: 1, id: "one".into(), timeout_ms: Some(1000),
+            payload: serde_json::json!({"session_id":"s","_source":"claude","hook_event_name":"PermissionRequest","tool_name":"Read"}) };
+        let mut deliveries = 0;
+        let result = deliver_hook(hook.clone(), |frame| {
+            deliveries += 1;
+            match frame {
+                ClientMessage::Hook { .. } => Ok(ServerMessage::Error { v: 1, id: String::new(),
+                    error: "invalid message: unknown variant `hook`, expected one of `hello`, `event`, `heartbeat`".into() }),
+                ClientMessage::Event { id, event, waits: true, timeout_ms: Some(1000), .. } => {
+                    assert_eq!(id, "one");
+                    assert_eq!(event.session_id, "s");
+                    Ok(ServerMessage::Ack { v: 1, id: "ok".into(), ack_for: id.clone() })
+                }
+                _ => panic!("unexpected frame"),
+            }
+        });
+        assert!(matches!(result, Ok(ServerMessage::Ack { .. })));
+        assert_eq!(deliveries, 2);
+        for disconnected in [true, false] {
+            let mut calls = 0;
+            let _ = deliver_hook(hook.clone(), |_| {
+                calls += 1;
+                if disconnected { Err(std::io::ErrorKind::UnexpectedEof.into()) }
+                else { Ok(ServerMessage::Error { v: 1, id: "handled".into(), error: "decision timeout".into() }) }
+            });
+            assert_eq!(calls, 1);
+        }
     }
 }
