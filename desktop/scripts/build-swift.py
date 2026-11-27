@@ -10,9 +10,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 BRIDGE = ROOT / "desktop/swift"
 CORE = (
-    "ClaudeConfigPaths", "ConfigPathIdentity", "ExtraConfigDirs", "ClaudeDesktopCodeSession", "ClaudeQuota", "ClaudeQuotaClient", "ClaudeQuotaScheduler", "ClaudeUsageScanner", "ModelLabel",
+    "ClaudeSessionRecord", "ClaudeConfigPaths", "ConfigPathIdentity", "ExtraConfigDirs", "ClaudeDesktopCodeSession", "ClaudeQuota", "ClaudeQuotaClient", "ClaudeQuotaScheduler", "ClaudeUsageScanner", "ModelLabel",
     "GitBranchReader", "ESP32Protocol", "AppleCompanionPayload", "AppleCompanionBluetooth", "AgentTaskList", "AgentTaskParsing", "AttentionPolicy", "BackgroundCompactionFilter",
-    "CoworkSession", "CoworkAuditLog", "CodexAppServerProtocol", "CodexHooksConfig", "CodexPermissionRules", "CodexThreadSubsession", "CursorHookPayload", "CursorSessionFolding", "DeclaredSubsession",
+    "SQLiteReader", "CodexStateStore", "CodexRollout", "CoworkSession", "CoworkAuditLog", "CodexAppServerProtocol", "CodexHooksConfig", "CodexPermissionRules", "CodexThreadSubsession", "CursorHookPayload", "CursorSessionFolding", "DeclaredSubsession",
     "EventSoundRouting", "SceneMuteState", "HermesHookPayload", "HermesSessionStore", "HostHarness", "JSONLTailer",
     "Models",
     "PushTransport", "PushChannel", "PushNotification", "PushPolicy", "IdleSessionRemoval", "SessionListOrdering", "SessionRecap", "SessionSnapshot",
@@ -20,7 +20,8 @@ CORE = (
     "HookIntake", "HookEdgeFacts", "AntigravityHookContract", "GrokHookForwardingPolicy", "GrokSessionPaths",
     "EventNormalizer", "FollowUpReminderScheduler", "RemoteReconnectPolicy",
 )
-TESTS = ("CodexAppServerProtocolTests", "GitBranchReaderTests", "CursorHookPayloadTests", "HookIntakeGoldenTests", "HookEdgeFactsTests", "BridgeGoldenHarness", "BridgeGoldenFixtures",
+APP_TESTS = ("SQLiteReaderClosedWALTests",)
+TESTS = ("SessionDiscoveryTests", "CodexAppServerProtocolTests", "GitBranchReaderTests", "CursorHookPayloadTests", "HookIntakeGoldenTests", "HookEdgeFactsTests", "BridgeGoldenHarness", "BridgeGoldenFixtures",
          "BridgeGoldenExpectations", "AntigravityHookContractTests", "GrokHookForwardingPolicyTests", "ESP32ProtocolTests", "AppleCompanionPayloadTests", "ClaudeQuotaTests", "ClaudeQuotaSchedulerTests", "FollowUpReminderSchedulerTests",
          "RemoteReconnectPolicyTests", "ClaudeUsageScannerTests", "ModelLabelTests",
          "CoworkSessionTests", "CoworkAuditLogTests", "AgentTaskListTests", "AttentionPolicyTests", "DerivedSessionStateTests",
@@ -48,7 +49,7 @@ def main():
     parser.add_argument("--configuration", choices=("debug", "release"), default="debug")
     args = parser.parse_args()
     if args.action == "macos-test":
-        subprocess.run(["swift", "test", "--package-path", str(ROOT), "--filter", "|".join((*TESTS, "SessionListOrderingTests", "IdleSessionRemovalTests", "CodexAppServerClientTests", "CodexAutoReviewRoutingTests", "ApprovalTrustBoundaryTests"))], check=True)
+        subprocess.run(["swift", "test", "--package-path", str(ROOT), "--filter", "|".join((*TESTS, *APP_TESTS, "SessionListOrderingTests", "IdleSessionRemovalTests", "CodexAppServerClientTests", "CodexAutoReviewRoutingTests", "ApprovalTrustBoundaryTests", "AppStateCodexTranscriptTests", "ClaudeSessionRecordPairingTests"))], check=True)
         return
     if args.scratch is None:
         parser.error("--scratch is required for a desktop build")
@@ -60,7 +61,9 @@ def main():
     stage([ROOT / "Sources/CodeIslandCore" / f"{name}.swift" for name in CORE], package / "Sources/CodeIslandCore")
     stage(sorted((BRIDGE / "DesktopSQLite").glob("*")), package / "Sources/DesktopSQLite")
     stage(sorted((BRIDGE / "Sources").glob("*.swift")), package / "Sources/CodeIslandDesktopCore")
-    stage([ROOT / "Tests/CodeIslandCoreTests" / f"{name}.swift" for name in TESTS], package / "Tests/CodeIslandCoreTests")
+    tests = [ROOT / "Tests/CodeIslandCoreTests" / f"{name}.swift" for name in TESTS]
+    tests.extend(ROOT / "Tests/CodeIslandTests" / f"{name}.swift" for name in APP_TESTS)
+    stage(tests, package / "Tests/CodeIslandCoreTests")
     base = ["swift", args.action, "--package-path", str(package), "-c", args.configuration]
     if jobs := os.environ.get("NUM_JOBS"):
         base += ["--jobs", jobs]

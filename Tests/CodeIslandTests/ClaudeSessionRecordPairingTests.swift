@@ -170,18 +170,4 @@ final class ClaudeSessionRecordPairingTests: XCTestCase {
         try writeRecord(for: p2, sessionId: sessionB)
         XCTAssertEqual(discover([p1, p2]), [p2.pid: sessionB])
     }
-
-    // MARK: - procStart
-
-    func testRecordedProcessStartIsReadAsUTC() {
-        XCTAssertEqual(
-            ClaudeDiscovery.parseRecordedProcessStart("Fri Oct 23 00:59:52 2026")?.timeIntervalSince1970,
-            1_792_717_192
-        )
-        XCTAssertEqual(
-            ClaudeDiscovery.parseRecordedProcessStart("Sat Oct  3 01:02:03 2026")?.timeIntervalSince1970,
-            1_790_989_323
-        )
-        XCTAssertNil(ClaudeDiscovery.parseRecordedProcessStart("yesterday"))
-    }
 }

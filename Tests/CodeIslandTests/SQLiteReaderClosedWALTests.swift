@@ -1,7 +1,14 @@
-import CryptoKit
+#if canImport(SQLite3)
 import SQLite3
+#else
+import DesktopSQLite
+#endif
 import XCTest
+#if canImport(CodeIsland)
 @testable import CodeIsland
+#else
+@testable import CodeIslandCore
+#endif
 
 /// Codex keeps `~/.codex/state_5.sqlite` in WAL mode and removes the -wal and
 /// -shm files whenever its last connection closes, as when Codex Desktop sits
@@ -57,12 +64,11 @@ final class SQLiteReaderClosedWALTests: XCTestCase {
         return path
     }
 
-    private func fingerprint(_ path: String) throws -> String {
-        let data = try XCTUnwrap(FileManager.default.contents(atPath: path))
-        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    private func fingerprint(_ path: String) throws -> Data {
+        try XCTUnwrap(FileManager.default.contents(atPath: path))
     }
 
-    private func assertUntouched(_ path: String, fingerprint before: String, file: StaticString = #filePath, line: UInt = #line) throws {
+    private func assertUntouched(_ path: String, fingerprint before: Data, file: StaticString = #filePath, line: UInt = #line) throws {
         XCTAssertEqual(try fingerprint(path), before, "no byte of the database changed", file: file, line: line)
         for suffix in ["-wal", "-shm", "-journal"] {
             XCTAssertFalse(
@@ -97,9 +103,12 @@ final class SQLiteReaderClosedWALTests: XCTestCase {
         let path = try makeClosedWALStateDatabase(rolloutPath: rollout.path, updatedAt: Int64(now.timeIntervalSince1970))
         let before = try fingerprint(path)
 
-        let records = CodexDiscovery.recentCodexDesktopThreadRecords(statePath: path, now: now)
-
-        XCTAssertEqual(records.map(\.sessionId), ["idle-desktop-thread"])
+        #if canImport(CodeIsland)
+        let ids = CodexDiscovery.recentCodexDesktopThreadRecords(statePath: path, now: now).map(\.sessionId)
+        #else
+        let ids = try XCTUnwrap(CodexStateStore.recentRows(at: path, now: now)).map(\.id)
+        #endif
+        XCTAssertEqual(ids, ["idle-desktop-thread"])
         try assertUntouched(path, fingerprint: before)
     }
 

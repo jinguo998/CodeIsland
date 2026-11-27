@@ -513,8 +513,7 @@ fn tail_file(
                     && let Some(id) = cursor.meta.session_id.as_deref()
                     && let Ok(modified) = metadata.modified()
                     && modified.elapsed().is_ok_and(|age| age <= CODEX_DESKTOP_RECOVERY_WINDOW)
-                    && let Ok(mut file) = std::fs::File::open(path)
-                    && let Some(turn) = read_older_codex_turn(&mut file, length)
+                    && let Some(turn) = codex_turn(path)
                 {
                     runtime.restore_codex_rollout_turn(id, &key, DateTime::from(modified), turn);
                 }
@@ -763,7 +762,8 @@ pub(crate) fn is_codex_desktop_transcript(path: &str) -> bool {
     meta.session_id.is_some_and(|id| id.starts_with(CODEX_DESKTOP_SESSION_PREFIX))
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum CodexOrigin {
     #[default]
     Unknown,
@@ -772,20 +772,9 @@ pub(crate) enum CodexOrigin {
 }
 
 pub(crate) fn codex_origin(originator: Option<&str>, source: Option<&str>, subagent: bool) -> CodexOrigin {
-    let originator = originator.unwrap_or_default().to_ascii_lowercase();
-    let source = source.unwrap_or_default().to_ascii_lowercase();
-    let app_server = matches!(source.as_str(), "vscode" | "appserver" | "app_server");
-    if originator.contains("desktop") {
-        CodexOrigin::Desktop
-    } else if (app_server || subagent) && !originator.is_empty() {
-        CodexOrigin::Cli
-    } else if app_server {
-        CodexOrigin::Desktop
-    } else if originator.contains("cli") || matches!(source.as_str(), "cli" | "exec") {
-        CodexOrigin::Cli
-    } else {
-        CodexOrigin::Unknown
-    }
+    codeisland_swift::call(c"codex.origin", serde_json::json!({
+        "originator": originator, "source": source, "subagent": subagent,
+    }))
 }
 
 fn codex_rollout_is_desktop(payload: &Value) -> bool {
@@ -815,7 +804,8 @@ fn codex_worker_title(payload: &Value) -> Option<String> {
         .or_else(|| subagent.as_str().and_then(non_empty))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum RecoveredTurn {
     Running,
     Settled,
@@ -875,7 +865,7 @@ pub(crate) fn read_recovery_summary(
     for bytes in lines.filter(|line| line.last() == Some(&b'\n')) {
         let Ok(line) = std::str::from_utf8(bytes) else { continue };
         let line = line.trim_start_matches('\u{feff}');
-        if let Some(turn) = discovery_turn(source, line) {
+        if source == TranscriptSource::Claude && let Some(turn) = claude_turn(line) {
             summary.turn = Some(turn);
         }
         let Some(event) = parse_line(source, line, &mut meta) else { continue };
@@ -893,27 +883,14 @@ pub(crate) fn read_recovery_summary(
     if source == TranscriptSource::Claude {
         summary.raw_id = meta.session_id;
     }
-    if summary.turn.is_none() && source == TranscriptSource::Codex && start > 0 {
-        summary.turn = read_older_codex_turn(&mut file, size);
+    if source == TranscriptSource::Codex {
+        summary.turn = codex_turn(path);
     }
     Some(summary)
 }
 
-fn discovery_turn(source: TranscriptSource, line: &str) -> Option<RecoveredTurn> {
-    if source == TranscriptSource::Codex {
-        if !line.contains("task_started") && !line.contains("task_complete")
-            && !line.contains("turn_aborted") && !line.contains("turn_failed")
-        {
-            return None;
-        }
-        let row: Value = serde_json::from_str(line).ok()?;
-        if row["type"] != "event_msg" { return None; }
-        return match row["payload"]["type"].as_str()? {
-            "task_started" => Some(RecoveredTurn::Running),
-            "task_complete" | "turn_aborted" | "turn_failed" => Some(RecoveredTurn::Settled),
-            _ => None,
-        };
-    }
+#[cfg(any(windows, test))]
+fn claude_turn(line: &str) -> Option<RecoveredTurn> {
     let row: Value = serde_json::from_str(line).ok()?;
     match row["type"].as_str()? {
         "result" => Some(RecoveredTurn::Settled),
@@ -923,47 +900,8 @@ fn discovery_turn(source: TranscriptSource, line: &str) -> Option<RecoveredTurn>
     }
 }
 
-fn read_older_codex_turn(file: &mut std::fs::File, size: u64) -> Option<RecoveredTurn> {
-    const CHUNK: u64 = 256 * 1024;
-    const LIMIT: u64 = 64 * 1024 * 1024;
-    let lower = size.saturating_sub(LIMIT);
-    let mut offset = size;
-    let mut fragment = Vec::new();
-    let mut discard_tail = true;
-    while offset > lower {
-        let length = CHUNK.min(offset - lower);
-        offset -= length;
-        file.seek(SeekFrom::Start(offset)).ok()?;
-        let mut bytes = Vec::with_capacity(length as usize + fragment.len());
-        file.by_ref().take(length).read_to_end(&mut bytes).ok()?;
-        bytes.extend_from_slice(&fragment);
-        if discard_tail {
-            let Some(last) = bytes.iter().rposition(|byte| *byte == b'\n') else {
-                fragment.clear();
-                continue;
-            };
-            bytes.truncate(last);
-            discard_tail = false;
-        }
-        let first_break = bytes.iter().position(|byte| *byte == b'\n');
-        let first_complete = if offset == 0 { 0 } else { first_break.map_or(bytes.len(), |at| at + 1) };
-        for line in bytes[first_complete..].rsplit(|byte| *byte == b'\n') {
-            if line.len() <= MAX_PARTIAL_BYTES
-                && let Ok(line) = std::str::from_utf8(line)
-                && let Some(turn) = discovery_turn(TranscriptSource::Codex, line)
-            {
-                return Some(turn);
-            }
-        }
-        fragment.clear();
-        let prefix = &bytes[..first_break.unwrap_or(bytes.len())];
-        if prefix.len() <= MAX_PARTIAL_BYTES {
-            fragment.extend_from_slice(prefix);
-        } else {
-            discard_tail = true;
-        }
-    }
-    None
+fn codex_turn(path: &Path) -> Option<RecoveredTurn> {
+    codeisland_swift::call(c"codex.rolloutTurn", path)
 }
 
 fn parse_codex_line(line: &str, meta: &mut TranscriptMeta) -> Option<AgentEvent> {

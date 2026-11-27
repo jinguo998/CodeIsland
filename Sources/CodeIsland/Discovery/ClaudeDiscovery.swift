@@ -131,45 +131,18 @@ enum ClaudeDiscovery {
         return recordedSessionId(inRecord: data, pid: process.pid, processStart: process.startTime)
     }
 
-    /// A record is a few hundred bytes; anything far larger is not one.
-    static let sessionRecordByteLimit = 64 * 1024
+    static let sessionRecordByteLimit = ClaudeSessionRecord.sessionRecordByteLimit
 
-    /// The record's bytes, or nil when it can't be read or is too large to be
-    /// one. Read only: nothing is opened for writing.
     static func readSessionRecord(atPath path: String) -> Data? {
-        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
-        defer { try? handle.close() }
-        guard let data = try? handle.read(upToCount: sessionRecordByteLimit + 1),
-              data.count <= sessionRecordByteLimit else { return nil }
-        return data
+        ClaudeSessionRecord.readSessionRecord(atPath: path)
     }
 
-    /// The session id in a record, when it is this process's: the record's
-    /// `pid` is `pid` and its `procStart` (UTC, second precision) is the live
-    /// process's start, so a record an earlier process with the same pid
-    /// left behind is not read as this one's. Anything missing, malformed
-    /// or different: nil.
     static func recordedSessionId(inRecord data: Data, pid: pid_t, processStart: Date?) -> String? {
-        guard let processStart,
-              let record = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              (record["pid"] as? NSNumber)?.int32Value == pid,
-              let raw = record["procStart"] as? String,
-              let recordedStart = parseRecordedProcessStart(raw),
-              abs(recordedStart.timeIntervalSince(processStart)) <= 1,
-              let sessionId = record["sessionId"] as? String,
-              !sessionId.isEmpty, !sessionId.contains("/") else { return nil }
-        return sessionId
+        ClaudeSessionRecord.recordedSessionId(inRecord: data, pid: Int64(pid), processStart: processStart)
     }
 
-    /// `procStart` as Claude Code writes it: "Fri Oct 23 00:59:52 2026", UTC
-    /// (a day below 10 may be space-padded).
     static func parseRecordedProcessStart(_ raw: String) -> Date? {
-        let collapsed = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        formatter.dateFormat = "EEE MMM d HH:mm:ss yyyy"
-        return formatter.date(from: collapsed)
+        ClaudeSessionRecord.parseRecordedProcessStart(raw)
     }
 
     struct ClaudeDiscoveryProcess {

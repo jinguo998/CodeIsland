@@ -23,11 +23,7 @@ struct CodexProcessDiscoveryCandidate: Sendable {
     let isDesktop: Bool
 }
 
-enum CodexTranscriptOrigin: Equatable, Sendable {
-    case desktop
-    case cli
-    case unknown
-}
+typealias CodexTranscriptOrigin = CodeIslandCore.CodexTranscriptOrigin
 
 /// A Codex Desktop thread recovered from Codex's local state database.
 ///
@@ -199,107 +195,18 @@ enum CodexDiscovery {
             return .unknown
         }
 
-        let originator = (payload["originator"] as? String)?.lowercased() ?? ""
-        let source = (payload["source"] as? String)?.lowercased() ?? ""
-        if originator.contains("desktop") {
-            return .desktop
-        }
-        // Codex records every app-server client under `vscode`/`appServer`,
-        // and a spawned thread keeps its parent's originator under an object
-        // source. A client that names itself something other than Desktop
-        // (Claude Code's Codex plugin sends "Claude Code") runs its own
-        // `codex app-server`, so the rollout belongs to that process like a
-        // CLI one.
-        let isAppServerSource = source == "vscode" || source == "appserver"
-        let isSubagentSource = payload["source"] is [String: Any]
-        if !originator.isEmpty, isAppServerSource || isSubagentSource {
-            return .cli
-        }
-        if isAppServerSource {
-            return .desktop
-        }
-        if originator.contains("cli") || source == "cli" || source == "exec" {
-            return .cli
-        }
-        return .unknown
+        return CodexRollout.origin(originator: payload["originator"] as? String,
+                                   source: payload["source"] as? String,
+                                   isSubagentSource: payload["source"] is [String: Any])
     }
 
-    /// Scan a rollout backwards in chunks until the latest lifecycle marker is
-    /// found. This avoids both a full-file read and a fixed-tail limit while
-    /// reusing `JSONLTailer`'s canonical Codex event interpretation.
     static func latestCodexTurnStatus(
         path: String,
         chunkSize: UInt64 = 256 * 1024,
         maxBytesToScan: UInt64 = 64 * 1024 * 1024,
         maxLineBytes: Int = 4 * 1024 * 1024
     ) -> ConversationTurnStatus? {
-        guard chunkSize > 0, maxBytesToScan > 0, maxLineBytes > 0 else { return nil }
-        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
-        defer { handle.closeFile() }
-
-        let fileSize = handle.seekToEndOfFile()
-        let lowerBound = fileSize > maxBytesToScan ? fileSize - maxBytesToScan : 0
-        var cursor = fileSize
-        var leadingFragment = Data()
-        var discardingOversizedLine = false
-
-        while cursor > lowerBound {
-            let readSize = min(cursor - lowerBound, chunkSize)
-            cursor -= readSize
-            handle.seek(toFileOffset: cursor)
-            let chunk = handle.readData(ofLength: Int(readSize))
-            var combined: Data
-            if discardingOversizedLine {
-                // We are walking backwards through one over-budget line. Drop
-                // its bytes until the previous newline, then resume with older
-                // complete lines instead of retaining/copying an unbounded blob.
-                guard let newline = chunk.lastIndex(of: 0x0A) else { continue }
-                combined = Data(chunk[...newline])
-                discardingOversizedLine = false
-            } else {
-                combined = chunk
-                combined.append(leadingFragment)
-            }
-
-            var lines: [Data] = []
-            var lineStart = combined.startIndex
-            for index in combined.indices where combined[index] == 0x0A {
-                lines.append(Data(combined[lineStart..<index]))
-                lineStart = combined.index(after: index)
-            }
-            lines.append(Data(combined[lineStart..<combined.endIndex]))
-            if cursor > lowerBound, !lines.isEmpty {
-                let fragment = lines.removeFirst()
-                if fragment.count > maxLineBytes {
-                    leadingFragment.removeAll(keepingCapacity: true)
-                    discardingOversizedLine = true
-                } else {
-                    leadingFragment = fragment
-                }
-            } else {
-                leadingFragment.removeAll(keepingCapacity: true)
-                // A capped scan begins in the middle of an unknown line. Never
-                // parse that boundary fragment as if it were complete JSON.
-                if lowerBound > 0, !lines.isEmpty {
-                    lines.removeFirst()
-                }
-            }
-
-            for line in lines.reversed()
-            where !line.isEmpty && line.count <= maxLineBytes {
-                if let status = codexTurnStatus(fromCompleteLine: line) {
-                    return status
-                }
-            }
-        }
-
-        return nil
-    }
-
-    private static func codexTurnStatus(fromCompleteLine line: Data) -> ConversationTurnStatus? {
-        var newlineTerminated = line
-        newlineTerminated.append(0x0A)
-        return JSONLTailer.latestTurnStatus(in: newlineTerminated)
+        CodexRollout.latestTurnStatus(path: path, chunkSize: chunkSize, maxBytesToScan: maxBytesToScan, maxLineBytes: maxLineBytes)
     }
 
     /// Load recently touched Codex Desktop threads from Codex's own state DB.
@@ -314,108 +221,27 @@ enum CodexDiscovery {
     ) -> [CodexDesktopThreadRecord] {
         let statePath = overrideStatePath ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/state_5.sqlite").path
-        // `has_user_event` is not a reliable visibility bit for Desktop threads:
-        // current ChatGPT/Codex builds may keep it at 0 while a user turn is
-        // actively writing to the rollout. Pull a slightly wider DB candidate
-        // window, then enforce the tighter freshness window from DB/file mtimes.
-        let candidateWindow = max(freshnessWindow, 60 * 60)
-        let cutoff = now.addingTimeInterval(-candidateWindow).timeIntervalSince1970
+        let rows = CodexStateStore.recentRows(at: statePath, now: now, freshnessWindow: freshnessWindow) ?? []
+        return rows.compactMap { row in
+            guard let cwd = row.cwd, fileManager.fileExists(atPath: row.path) else { return nil }
+            // A spawned CLI rollout can share the desktop state database.
+            let origin = codexTranscriptOrigin(path: row.path)
+            guard origin != .cli, !row.source.hasPrefix("{\"subagent") || origin == .desktop else { return nil }
 
-        return SQLiteReader.withSQLiteDatabase(at: statePath) { db in
-            let columns = SQLiteReader.sqliteTableColumns(db: db, tableName: "threads")
-            let requiredColumns: Set<String> = [
-                "id", "rollout_path", "cwd", "archived", "source",
-            ]
-            guard requiredColumns.isSubset(of: columns) else { return [] }
-
-            let updatedAtExpression: String
-            if columns.contains("updated_at_ms"), columns.contains("updated_at") {
-                updatedAtExpression = "COALESCE(NULLIF(updated_at_ms, 0) / 1000.0, updated_at)"
-            } else if columns.contains("updated_at_ms") {
-                updatedAtExpression = "updated_at_ms / 1000.0"
-            } else if columns.contains("updated_at") {
-                updatedAtExpression = "updated_at"
-            } else {
-                return []
-            }
-            let modelExpression = columns.contains("model") ? "model" : "NULL"
-            let spawnColumns = SQLiteReader.sqliteTableColumns(db: db, tableName: "thread_spawn_edges")
-            let hasSpawnStatus = Set(["child_thread_id", "status"]).isSubset(of: spawnColumns)
-            let spawnJoin = hasSpawnStatus
-                ? "LEFT JOIN thread_spawn_edges edge ON edge.child_thread_id = thread.id"
-                : ""
-            let spawnStatusExpression = hasSpawnStatus ? "edge.status" : "NULL"
-
-            guard let statement = SQLiteReader.prepareSQLiteStatement(
-                db: db,
-                sql: """
-                    SELECT thread.id, thread.rollout_path, thread.cwd,
-                           \(updatedAtExpression), \(modelExpression),
-                           \(spawnStatusExpression), thread.source
-                    FROM threads AS thread
-                    \(spawnJoin)
-                    WHERE thread.archived = 0
-                      AND \(updatedAtExpression) >= ?
-                      AND (
-                        thread.source = 'vscode'
-                        OR thread.source = 'appServer'
-                        OR thread.source LIKE '{"subagent"%'
-                      )
-                      ORDER BY \(updatedAtExpression) DESC
-                      LIMIT 50;
-                    """
-            ) else { return [] }
-            defer { sqlite3_finalize(statement) }
-            sqlite3_bind_double(statement, 1, cutoff)
-
-            var records: [CodexDesktopThreadRecord] = []
-            while sqlite3_step(statement) == SQLITE_ROW {
-                guard let sessionId = SQLiteReader.sqliteColumnString(statement, index: 0),
-                      let transcriptPath = SQLiteReader.sqliteColumnString(statement, index: 1),
-                      let cwd = SQLiteReader.sqliteColumnString(statement, index: 2),
-                      fileManager.fileExists(atPath: transcriptPath) else { continue }
-                // JSON `source` rows can also belong to a concurrent Codex CLI
-                // subagent. Never re-key an explicitly CLI-origin rollout into
-                // the Desktop namespace merely because the Desktop host is open.
-                let transcriptOrigin = codexTranscriptOrigin(path: transcriptPath)
-                let databaseSource = SQLiteReader.sqliteColumnString(statement, index: 6) ?? ""
-                if databaseSource.hasPrefix("{\"subagent") {
-                    // JSON source alone does not identify the owning surface.
-                    // Require positive Desktop provenance before namespacing it.
-                    guard transcriptOrigin == .desktop else { continue }
-                } else {
-                    guard transcriptOrigin != .cli else { continue }
-                }
-
-                let dbUpdatedAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 3))
-                let fileModifiedAt = (try? fileManager.attributesOfItem(atPath: transcriptPath))?[.modificationDate] as? Date
-                let modifiedAt = max(dbUpdatedAt, fileModifiedAt ?? dbUpdatedAt)
-                guard modifiedAt >= now.addingTimeInterval(-freshnessWindow) else { continue }
-
-                let dbModel = SQLiteReader.sqliteColumnString(statement, index: 4)
-                let (transcriptModel, messages) = readRecentFromCodexTranscript(path: transcriptPath)
-                let turnStatus = latestCodexTurnStatus(path: transcriptPath)
-                let isFresh = now.timeIntervalSince(modifiedAt) <= 300
-                let isActive = isFresh && turnStatus == .processing
-                if !isActive,
-                   now.timeIntervalSince(modifiedAt) > completionSettleWindow {
-                    continue
-                }
-
-                records.append(CodexDesktopThreadRecord(
-                    sessionId: sessionId,
-                    cwd: cwd,
-                    model: dbModel ?? transcriptModel,
-                    modifiedAt: modifiedAt,
-                    recentMessages: messages,
-                    transcriptPath: transcriptPath,
-                    status: isActive ? .processing : .idle,
-                    subagentMetadata: codexSubagentMetadata(inTranscriptPath: transcriptPath),
-                    subagentStatus: SQLiteReader.sqliteColumnString(statement, index: 5)
-                ))
-            }
-            return records
-        } ?? []
+            let dbUpdatedAt = Date(timeIntervalSince1970: row.modified)
+            let fileModifiedAt = (try? fileManager.attributesOfItem(atPath: row.path))?[.modificationDate] as? Date
+            let modifiedAt = max(dbUpdatedAt, fileModifiedAt ?? dbUpdatedAt)
+            guard modifiedAt >= now.addingTimeInterval(-freshnessWindow),
+                  let status = CodexStateStore.visibleStatus(modifiedAt: modifiedAt, now: now,
+                    turnStatus: latestCodexTurnStatus(path: row.path), freshnessWindow: freshnessWindow,
+                    completionSettleWindow: completionSettleWindow) else { return nil }
+            let (transcriptModel, messages) = readRecentFromCodexTranscript(path: row.path)
+            return CodexDesktopThreadRecord(
+                sessionId: row.id, cwd: cwd, model: row.model ?? transcriptModel, modifiedAt: modifiedAt,
+                recentMessages: messages, transcriptPath: row.path, status: status,
+                subagentMetadata: codexSubagentMetadata(inTranscriptPath: row.path), subagentStatus: row.edgeStatus
+            )
+        }
     }
 
     /// Find active Codex sessions by matching running processes to session files

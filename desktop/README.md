@@ -1,6 +1,6 @@
 # CodeIsland Desktop
 
-CodeIsland's Windows shell uses Tauri 2 and React. The app and hook client load a native library built from the original files in `Sources/CodeIslandCore`. The hook runs the original Swift intake. The application uses the same Swift session reducer, task lists, ordering, reminders, Claude usage and quota clients, Cowork audit reader, Codex approvals and app-server messages, push policies, SSH reconnect policy, and Bluetooth protocol encoders as the macOS application. Windows supplies the named pipe, process and window handles, WinRT Bluetooth and the WebView. The Windows installers include the Swift runtime.
+CodeIsland's Windows shell uses Tauri 2 and React. The app and hook client load a native library built from the original files in `Sources/CodeIslandCore`. The hook runs the original Swift intake. The application uses the same Swift session reducer, task lists, ordering, reminders, Claude usage and quota clients, Cowork audit reader, Codex approvals, app-server messages and SQLite discovery, Claude session-record matching, push policies, SSH reconnect policy, and Bluetooth protocol encoders as the macOS application. Windows supplies the named pipe, process and window handles, WinRT Bluetooth and the WebView. The Windows installers include the Swift runtime.
 
 ## Prerequisites
 
