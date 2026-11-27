@@ -205,7 +205,7 @@ impl Paths {
         }
         def.config_paths
             .iter()
-            .map(|path| self.expand(path))
+            .map(|path| config_candidate(def, self.expand(path)))
             .collect()
     }
 
@@ -224,7 +224,7 @@ impl Paths {
                         .trim_start_matches("~/")
                         .trim_start_matches('/')
                         .trim_start_matches('\\');
-                    dir.join(relative)
+                    config_candidate(def, dir.join(relative))
                 })
             })
             .collect()
@@ -363,6 +363,16 @@ pub(crate) fn resolve_write_path(path: &Path) -> PathBuf {
         }
     }
     path.to_path_buf()
+}
+
+fn config_candidate(def: &AgentDefinition, path: PathBuf) -> PathBuf {
+    if def.agent == AgentKind::OpenCode && path.file_name().is_some_and(|name| name == "opencode.json") {
+        let selected: String = codeisland_swift::call(c"install.opencodeTarget", serde_json::json!({
+            "json": path, "jsonc": path.with_extension("jsonc"),
+        }));
+        return PathBuf::from(selected);
+    }
+    path
 }
 
 fn hook_names() -> [&'static str; 2] {

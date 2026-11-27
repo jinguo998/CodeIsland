@@ -54,6 +54,10 @@ func installerOperation(_ operation: String, _ data: Data) throws -> Data {
             text = next
         }
         return try encoder.encode(text)
+    case "install.opencodeTarget":
+        struct Paths: Decodable { let json: String; let jsonc: String }
+        let paths = try decoder.decode(Paths.self, from: data)
+        return try encoder.encode(ConfigInstaller.opencodeTarget(paths.json, paths.jsonc))
     case "install.opencode":
         struct Plugin: Decodable { let original: String; let reference: String? }
         let args = try decoder.decode(Plugin.self, from: data)

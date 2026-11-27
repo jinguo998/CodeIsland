@@ -763,7 +763,7 @@ fn install_opencode(
     let existing = read_to_string_opt(config_path)?.unwrap_or_default();
     let merged = merge_opencode_config(&existing, &plugin_path)?;
     write_if_changed(paths, def.agent, config_path, &merged)?;
-    Ok(())
+    clean_other_opencode_configs(paths, def, config_path)
 }
 
 fn uninstall_opencode(
@@ -775,9 +775,26 @@ fn uninstall_opencode(
         let plugin_path = dir.join("plugins").join("codeisland.js");
         remove_plugin_file(def, &plugin_path)?;
     }
-    if let Some(existing) = read_to_string_opt(config_path)? {
-        let cleaned = remove_opencode_config(&existing)?;
-        write_if_changed(paths, def.agent, config_path, &cleaned)?;
+    unregister_opencode(paths, def, config_path)?;
+    clean_other_opencode_configs(paths, def, config_path)
+}
+
+fn clean_other_opencode_configs(paths: &Paths, def: &AgentDefinition, selected: &Path) -> Result<(), AgentError> {
+    if def.agent == AgentKind::OpenCode {
+        for name in ["opencode.jsonc", "opencode.json", "config.json"] {
+            let path = selected.with_file_name(name);
+            if path != selected { unregister_opencode(paths, def, &path)?; }
+        }
+    }
+    Ok(())
+}
+
+fn unregister_opencode(paths: &Paths, def: &AgentDefinition, path: &Path) -> Result<(), AgentError> {
+    if let Some(existing) = read_to_string_opt(path)? {
+        if existing.contains("codeisland.js") || existing.contains("vibe-island") {
+            let cleaned = remove_opencode_config(&existing)?;
+            write_if_changed(paths, def.agent, path, &cleaned)?;
+        }
     }
     Ok(())
 }

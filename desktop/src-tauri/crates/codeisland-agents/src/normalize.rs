@@ -92,6 +92,7 @@ pub struct HookFields {
     tool: Option<String>,
     agent_id: Option<String>,
     session: Option<String>,
+    parent: Option<String>,
     transcript: Option<String>,
     question: Option<String>,
     options: Option<Vec<String>>,
@@ -137,16 +138,9 @@ fn project_event(
     };
 
     let agent_id = fields.agent_id;
-    let parent_from_payload = pick_str(
-        &payload,
-        &[
-            "parent_session_id",
-            "parentSessionId",
-            "parent_id",
-            "parentId",
-            "_parent_session_id",
-        ],
-    );
+    let parent_from_payload = fields.parent.or_else(|| {
+        pick_str(&payload, &["parent_session_id", "parentSessionId", "parent_id", "parentId"])
+    });
     let ppid = pick_ppid(&payload).or(ppid_hint);
     let mut session_id = fields.session.or_else(|| pick_legacy_session_id(&payload))
         .unwrap_or_else(|| session_fallback(&agent, source, ppid));

@@ -131,7 +131,7 @@
 | [src/ssh_signals.rs](src-tauri/src/ssh_signals.rs) | Win32 窗口及网络变化通知。 |
 | [src/terminal.rs](src-tauri/src/terminal.rs) | Windows Terminal、WezTerm、WSL、前台窗口及终端激活。 |
 | [src/tray.rs](src-tauri/src/tray.rs) | Tauri 托盘和 Windows 任务栏主题、头像素色与系统语言。 |
-| [src/tray_icon.rs](src-tauri/src/tray_icon.rs) | 将 StatusItemController.menuBarIcon 使用的药丸形状及两个透明孔栅格化为 Windows 托盘要求的 RGBA 位图。 |
+| [src/tray_icon.rs](src-tauri/src/tray_icon.rs) | StatusItemController.menuBarIcon 的原始绘图语句直接产生图形路径和透明区域。Windows 按任务栏颜色和像素密度生成 RGBA 位图。 |
 | [src/wezterm.rs](src-tauri/src/wezterm.rs) | 在 Windows 通过 WezTerm CLI 确认 pane、工作目录及前台窗口。 |
 | [src/window.rs](src-tauri/src/window.rs) | Windows WebView、HWND、显示器工作区、DPI 和窗口层级。 |
 | [src/windows_terminal.rs](src-tauri/src/windows_terminal.rs) | Windows UI Automation 查询并激活对应标签页。 |

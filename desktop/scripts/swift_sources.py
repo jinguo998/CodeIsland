@@ -118,6 +118,11 @@ def app_selections(root):
         return Source(root, f"Sources/CodeIsland/{name}.swift")
     server = source("HookServer")
     settings = source("Settings")
+    tray = source("StatusItemController")
+    yield "TrayDrawing", FOUNDATION + namespace("extension DesktopTrayDrawing",
+        "    func draw() {\n        let ctx = self\n" + tray.line("        let size = NSSize(") +
+        "        width = size.width\n        height = size.height\n" + tray.line("            let pill = NSRect(") +
+        tray.part("    static func menuBarIcon(", "            NSBezierPath(roundedRect:", "            return true") + "    }\n")
     yield "HookServer", APP + namespace("enum HookServer",
         server.decl("    enum RouteKind:"), server.decl("    enum Intake {"),
         *(server.decl("    nonisolated static func " + method) for method in (
@@ -195,6 +200,9 @@ def app_selections(root):
             installer.decl("    static func mimoPluginSource("),
             installer.line("    private static let minimaxManifestMarker"), installer.decl("    static func minimaxManifestDocument("),
             installer.decl("    static func stripJSONComments("),
+            "    static func opencodeTarget(_ opencodeConfigPathNew: String, _ opencodeConfigPathJsonc: String, fm: FileManager = .default) -> String {\n" +
+            installer.part("    private static func installOpencodePlugin(", "        let targetPath: String", "        let originalContents:") +
+            "        return targetPath\n    }\n",
             installer.decl("    static func mergeOpencodePluginRef("), installer.decl("    static func removeOpencodePluginRef("),
             "    static func traeCommand(event: String, timeout: Int, command: String) -> String {\n" +
             """        let escapedCommand = command.replacingOccurrences(of: "'", with: "''")

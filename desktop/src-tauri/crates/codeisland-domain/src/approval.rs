@@ -20,6 +20,11 @@ pub fn source_keeps_always_rule(source: &str) -> bool {
     }))
 }
 
+/// Older desktop messages identify the provider only by its desktop enum.
+pub fn agent_keeps_always_rule(agent: AgentKind) -> bool {
+    source_keeps_always_rule(agent.hook_source())
+}
+
 pub fn command_for_event(event: &AgentEvent) -> Option<&str> {
     if event.agent != AgentKind::Codex || event.tool.as_deref() != Some("Bash") {
         return None;
@@ -49,6 +54,13 @@ pub fn commands_match(script: &str, patterns: &[Vec<String>]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qoder_cli_and_ide_handle_persistent_rules_differently() {
+        assert!(!source_keeps_always_rule("qoder"));
+        assert!(source_keeps_always_rule("qoder-cli"));
+        assert!(agent_keeps_always_rule(AgentKind::Qoder));
+    }
 
     #[test]
     fn only_plain_commands_and_every_member_match() {

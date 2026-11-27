@@ -114,6 +114,7 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
         return try encoder.encode(RemovedSessionRevivalEvidence.forHookEvent(event,
             normalizedEventName: EventNormalizer.normalize(event.eventName)) != .passive)
     case "desktop.cardShortcut": return try DesktopCardShortcut.route(data)
+    case "tray.mask": return try encoder.encode(DesktopTrayDrawing.mask())
     case "session.project":
         var session = SessionSnapshot()
         session.cwd = try DesktopPath.withForwardSlashes(decoder.decode(String.self, from: data))

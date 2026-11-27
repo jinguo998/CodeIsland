@@ -29,6 +29,15 @@ private func hookFields(_ event: HookEvent) -> [String: Any] {
     fields["tool"] = event.toolName
     fields["agentId"] = event.agentId
     fields["session"] = SubsessionRouter.sessionId(in: event.rawJSON)
+    if let parent = SubsessionRouter.parentCardId(in: event.rawJSON) {
+        // The SSH transport applies its persisted Windows host namespace after projection.
+        let prefix = HookEvent.cardSessionId(forRawSessionId: "", in: event.rawJSON)
+        if SubsessionRouter.remoteHostId(in: event.rawJSON) != nil, parent.hasPrefix(prefix) {
+            fields["parent"] = String(parent.dropFirst(prefix.count))
+        } else {
+            fields["parent"] = parent
+        }
+    }
     fields["transcript"] = SubsessionRouter.transcriptPath(in: event.rawJSON)
     fields["question"] = items.first?.payload.question ?? notification?.question
     fields["items"] = items.map { item -> [String: Any] in
