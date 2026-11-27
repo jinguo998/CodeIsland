@@ -117,28 +117,4 @@ final class TurnFailureSoundTests: XCTestCase {
         // A full quiet minute later it is a new failure again.
         XCTAssertTrue(debouncer.shouldPlay(key: "a", now: t0.addingTimeInterval(161)))
     }
-
-    func testSameDayWindowIsHalfOpen() {
-        // 10:00–12:00
-        XCTAssertFalse(EventSoundRouting.isInQuietHours(minutesSinceMidnight: 599, start: 600, end: 720))
-        XCTAssertTrue(EventSoundRouting.isInQuietHours(minutesSinceMidnight: 600, start: 600, end: 720))
-        XCTAssertTrue(EventSoundRouting.isInQuietHours(minutesSinceMidnight: 719, start: 600, end: 720))
-        XCTAssertFalse(EventSoundRouting.isInQuietHours(minutesSinceMidnight: 720, start: 600, end: 720))
-    }
-
-    func testOvernightWindowSpansMidnight() {
-        // 22:00–08:00
-        XCTAssertFalse(EventSoundRouting.isInQuietHours(minutesSinceMidnight: 1319, start: 1320, end: 480))
-        XCTAssertTrue(EventSoundRouting.isInQuietHours(minutesSinceMidnight: 1320, start: 1320, end: 480))
-        XCTAssertTrue(EventSoundRouting.isInQuietHours(minutesSinceMidnight: 0, start: 1320, end: 480))
-        XCTAssertTrue(EventSoundRouting.isInQuietHours(minutesSinceMidnight: 479, start: 1320, end: 480))
-        XCTAssertFalse(EventSoundRouting.isInQuietHours(minutesSinceMidnight: 480, start: 1320, end: 480))
-        XCTAssertFalse(EventSoundRouting.isInQuietHours(minutesSinceMidnight: 720, start: 1320, end: 480))
-    }
-
-    func testEmptyWindowNeverMutes() {
-        for m in [0, 600, 1439] {
-            XCTAssertFalse(EventSoundRouting.isInQuietHours(minutesSinceMidnight: m, start: 600, end: 600))
-        }
-    }
 }

@@ -2,18 +2,6 @@ import XCTest
 @testable import CodeIslandCore
 
 final class FollowUpReminderSchedulerTests: XCTestCase {
-    func testSilencingInvalidatesADeliveryInFlight() throws {
-        let start = Date(timeIntervalSince1970: 10)
-        var scheduler = FollowUpReminderScheduler(interval: 1)
-        scheduler.sync(kind: .approval, requests: ["s": "request"], now: start)
-        let reminder = try XCTUnwrap(scheduler.collectDue(now: start.addingTimeInterval(1), heldBack: false).first)
-        XCTAssertTrue(scheduler.isCurrent(reminder))
-        scheduler.silenceAll(sessionId: "s")
-        XCTAssertFalse(scheduler.isCurrent(reminder))
-        scheduler.postpone(reminder, now: start.addingTimeInterval(2))
-        XCTAssertNil(scheduler.nextWakeDate())
-    }
-
     typealias Key = FollowUpReminderScheduler.Key
 
     private let t0 = Date(timeIntervalSinceReferenceDate: 10_000)

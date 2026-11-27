@@ -1,6 +1,6 @@
 import Foundation
 
-public struct ClaudeUsageTotals: Encodable, Equatable, Sendable {
+public struct ClaudeUsageTotals: Equatable, Sendable {
     public var inputTokens = 0
     public var outputTokens = 0
     public var cacheCreationTokens = 0
@@ -61,7 +61,6 @@ public enum ClaudeUsageScanner {
             var seenIds: Set<String> = []
         }
         var files: [String: FileEntry] = [:]
-        public var isEmpty: Bool { files.isEmpty }
         public init() {}
     }
 

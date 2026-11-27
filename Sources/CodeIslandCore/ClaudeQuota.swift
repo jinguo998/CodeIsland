@@ -191,8 +191,9 @@ public struct ClaudeQuotaSnapshot: Equatable, Sendable {
     }
 
     private static func number(_ any: Any?) -> Double? {
-        let value = (any as? NSNumber)?.doubleValue ?? (any as? String).flatMap(Double.init)
-        return value.flatMap { $0.isFinite ? $0 : nil }
+        if let n = any as? NSNumber { return n.doubleValue }
+        if let s = any as? String { return Double(s) }
+        return nil
     }
 
     private static let fractionalFormatter: ISO8601DateFormatter = {

@@ -491,6 +491,45 @@ final class AppStateCodexTranscriptTests: XCTestCase {
         XCTAssertEqual(Set(records.map(\.sessionId)), ["desktop", "legacy"])
     }
 
+    func testReverseLifecycleScanSkipsOversizedUnterminatedTailLine() throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codeisland-codex-oversized-tail-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: file) }
+        var data = Data(
+            (#"{"type":"event_msg","payload":{"type":"task_started"}}"# + "\n").utf8
+        )
+        data.append(Data(repeating: 0x78, count: 512 * 1024))
+        try data.write(to: file)
+
+        XCTAssertEqual(
+            CodexDiscovery.latestCodexTurnStatus(
+                path: file.path,
+                chunkSize: 16 * 1024,
+                maxBytesToScan: 1024 * 1024,
+                maxLineBytes: 64 * 1024
+            ),
+            .processing
+        )
+    }
+
+    func testReverseLifecycleScanHonorsExplicitTotalByteBudget() throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codeisland-codex-scan-budget-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: file) }
+        var data = Data(
+            (#"{"type":"event_msg","payload":{"type":"task_started"}}"# + "\n").utf8
+        )
+        data.append(Data(repeating: 0x78, count: 256 * 1024))
+        try data.write(to: file)
+
+        XCTAssertNil(CodexDiscovery.latestCodexTurnStatus(
+            path: file.path,
+            chunkSize: 16 * 1024,
+            maxBytesToScan: 64 * 1024,
+            maxLineBytes: 32 * 1024
+        ))
+    }
+
     func testRootCwdDesktopRolloutSurvivesMissingStateDatabase() throws {
         let fm = FileManager.default
         let tempDir = fm.temporaryDirectory

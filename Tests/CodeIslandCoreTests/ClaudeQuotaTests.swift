@@ -1,7 +1,4 @@
 import XCTest
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 @testable import CodeIslandCore
 
 final class ClaudeQuotaTests: XCTestCase {
@@ -413,7 +410,6 @@ final class ClaudeQuotaTests: XCTestCase {
         XCTAssertEqual(CountingProtocol.count, 1)
     }
 
-    #if os(macOS)
     // MARK: security(1) runner
 
     func testRunnerReturnsStdoutAndSecretIsTrimmed() throws {
@@ -435,5 +431,4 @@ final class ClaudeQuotaTests: XCTestCase {
         // Generous bound for a loaded CI box; the point is "not 30s".
         XCTAssertLessThan(Date().timeIntervalSince(started), 10)
     }
-    #endif
 }

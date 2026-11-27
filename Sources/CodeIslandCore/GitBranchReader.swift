@@ -20,14 +20,9 @@ public enum GitBranchReader {
     /// submodules) and resolve HEAD. Depth-capped so a bogus cwd never scans
     /// the whole filesystem upward.
     public static func read(cwd: String) -> GitBranchInfo? {
-        read(cwd: cwd, maxDepth: 12)
-    }
-
-    public static func read(cwd: String, maxDepth: Int) -> GitBranchInfo? {
-        guard maxDepth > 0 else { return nil }
-        var dir = (normalizedSeparators(cwd) as NSString).standardizingPath
+        var dir = (cwd as NSString).standardizingPath
         let fm = FileManager.default
-        for _ in 0..<maxDepth {
+        for _ in 0..<12 {
             let gitPath = dir + "/.git"
             var isDir: ObjCBool = false
             if fm.fileExists(atPath: gitPath, isDirectory: &isDir) {
@@ -76,18 +71,9 @@ public enum GitBranchReader {
         guard line.hasPrefix("gitdir:") else { return nil }
         var path = String(line.dropFirst("gitdir:".count)).trimmingCharacters(in: .whitespaces)
         guard !path.isEmpty else { return nil }
-        path = normalizedSeparators(path)
-        if !path.hasPrefix("/") && !ConfigPathIdentity.isWindowsAbsolute(path) {
+        if !path.hasPrefix("/") {
             path = (dir as NSString).appendingPathComponent(path)
         }
         return (path as NSString).standardizingPath
     }
-    private static func normalizedSeparators(_ path: String) -> String {
-        #if os(Windows)
-        return path.replacingOccurrences(of: #"\"#, with: "/")
-        #else
-        return path
-        #endif
-    }
-
 }

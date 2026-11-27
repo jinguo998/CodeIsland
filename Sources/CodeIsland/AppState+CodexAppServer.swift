@@ -274,7 +274,48 @@ extension AppState {
         guard let threadId = params["threadId"]?.asString else { return }
         let sessionId = AppState.codexAppSessionPrefix + threadId
 
-        let askItems = CodexAppServerProtocol.questions(in: params)
+        guard case .array(let rawQuestions)? = params["questions"], !rawQuestions.isEmpty else { return }
+
+        var askItems: [AskUserQuestionItem] = []
+        var usedAnswerKeys = Set<String>()
+        for entry in rawQuestions {
+            guard let q = entry.asObject else { continue }
+            let questionText = q["question"]?.asString ?? "Question"
+            let header = q["header"]?.asString
+            let isSecret = q["isSecret"]?.asBool ?? false
+
+            var optionLabels: [String] = []
+            var optionDescs: [String] = []
+            if case .array(let opts)? = q["options"] {
+                for opt in opts {
+                    guard let o = opt.asObject else { continue }
+                    optionLabels.append(o["label"]?.asString ?? "")
+                    optionDescs.append(o["description"]?.asString ?? "")
+                }
+            }
+
+            // answerKey = question.id (the wire key we must echo in the reply).
+            // Fall back to a synthetic key and de-duplicate to keep the wizard's
+            // position->answerKey mapping unambiguous.
+            var answerKey = q["id"]?.asString ?? questionText
+            if answerKey.isEmpty { answerKey = questionText }
+            if usedAnswerKeys.contains(answerKey) {
+                var suffix = 2
+                while usedAnswerKeys.contains("\(answerKey)_\(suffix)") { suffix += 1 }
+                answerKey = "\(answerKey)_\(suffix)"
+            }
+            usedAnswerKeys.insert(answerKey)
+
+            let payload = QuestionPayload(
+                question: questionText,
+                options: optionLabels.isEmpty ? nil : optionLabels,
+                descriptions: optionDescs.contains(where: { !$0.isEmpty }) ? optionDescs : nil,
+                header: header,
+                isSecret: isSecret
+            )
+            askItems.append(AskUserQuestionItem(payload: payload, answerKey: answerKey, multiSelect: false))
+        }
+
         guard !askItems.isEmpty else { return }
         reviveRemovedSession(sessionId)
 
@@ -352,7 +393,13 @@ extension AppState {
     /// `nil` answers (skip / abandon) produce an empty `answers` object so the
     /// server can move on without crashing on a missing key.
     static func codexRequestUserInputResult(answersByKey: [String: [String]]?) -> [String: Any] {
-        CodexAppServerProtocol.questionResult(answersByKey: answersByKey)
+        var answers: [String: Any] = [:]
+        if let answersByKey {
+            for (key, values) in answersByKey {
+                answers[key] = ["answers": values]
+            }
+        }
+        return ["answers": answers]
     }
 
     /// Synthesize a HookEvent that only carries the sessionId. Codex app-server
@@ -439,7 +486,30 @@ extension AppState {
         _ snapshot: inout SessionSnapshot,
         status: [String: AnyCodableLike]?
     ) {
-        CodexAppServerProtocol.applyThreadStatus(&snapshot, status: status)
+        guard let typeLabel = status?["type"]?.asString else { return }
+        switch typeLabel {
+        case "active":
+            let flags: [AnyCodableLike]
+            if case .array(let a) = status?["activeFlags"] ?? .null { flags = a } else { flags = [] }
+            let flagStrings = flags.compactMap { $0.asString }
+            if flagStrings.contains("waitingOnApproval") {
+                snapshot.status = .waitingApproval
+            } else if flagStrings.contains("waitingOnUserInput") {
+                snapshot.status = .waitingQuestion
+            } else {
+                snapshot.status = .running
+                snapshot.currentTool = nil
+                snapshot.toolDescription = nil
+            }
+        case "idle":
+            snapshot.status = .idle
+            snapshot.currentTool = nil
+            snapshot.toolDescription = nil
+        case "systemError", "notLoaded":
+            snapshot.status = .idle
+        default:
+            break
+        }
     }
 
     // Instance method kept for convenience on call sites that already have `self`.

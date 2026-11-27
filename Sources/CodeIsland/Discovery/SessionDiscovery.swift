@@ -261,6 +261,27 @@ enum SessionDiscovery {
         return String(data: data, encoding: .utf8)
     }
 
+    static func firstStringRecursively(in value: Any, key: String) -> String? {
+        if let dict = value as? [String: Any] {
+            if let string = dict[key] as? String,
+               !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return string
+            }
+            for child in dict.values {
+                if let found = firstStringRecursively(in: child, key: key) {
+                    return found
+                }
+            }
+        } else if let array = value as? [Any] {
+            for child in array {
+                if let found = firstStringRecursively(in: child, key: key) {
+                    return found
+                }
+            }
+        }
+        return nil
+    }
+
     static func extractTextContent(from rawContent: Any?) -> String? {
         if let text = rawContent as? String, !text.isEmpty {
             return text

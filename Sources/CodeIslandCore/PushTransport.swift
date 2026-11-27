@@ -1,7 +1,4 @@
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 
 /// Raw outcome of one HTTP exchange, before the channel interprets the body.
 public struct PushTransportResponse: Equatable, Sendable {
@@ -182,9 +179,7 @@ public final class URLSessionPushTransport: PushTransport {
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.timeoutIntervalForRequest = timeout
         config.timeoutIntervalForResource = timeout + 2
-        #if !canImport(FoundationNetworking)
         config.waitsForConnectivity = false
-        #endif
         self.session = URLSession(configuration: config)
     }
 
@@ -207,9 +202,9 @@ public final class URLSessionPushTransport: PushTransport {
     }
 
     /// `Retry-After` as delay-seconds or an HTTP date.
-    public static func retryAfter(_ value: String?, now: Date = Date()) -> TimeInterval? {
+    static func retryAfter(_ value: String?, now: Date = Date()) -> TimeInterval? {
         guard let value = value?.trimmingCharacters(in: .whitespaces), !value.isEmpty else { return nil }
-        if let seconds = TimeInterval(value), seconds.isFinite { return max(seconds, 0) }
+        if let seconds = TimeInterval(value) { return max(seconds, 0) }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "GMT")

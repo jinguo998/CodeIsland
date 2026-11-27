@@ -200,9 +200,6 @@ public struct RemoteReconnectPolicy: Equatable, Sendable {
         return satisfied && !previous
     }
 
-    /// A platform monitor temporarily stopped reporting network reachability.
-    public mutating func networkUnknown() { networkSatisfied = nil }
-
     /// Brings back every wanted host that is neither up nor connecting, with
     /// a fresh backoff; offline, it waits for the network instead.
     public mutating func recover() -> [String: Step] {

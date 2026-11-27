@@ -236,15 +236,6 @@ public enum PushThrottle {
         kind == .permission || kind == .question
     }
 
-    public static func admit(kind: PushEventKind, sessionId: String, requestKey: String?, now: Date,
-                             deduplicator: inout PushDeduplicator, globalLimiter: inout PushRateLimiter) -> PushSkipReason? {
-        if !mustDeliver(kind), globalLimiter.nextSlot(now: now) > now { return .rateLimited }
-        if let reason = deduplicator.admit(kind: kind, sessionId: sessionId, requestKey: requestKey, now: now) { return reason }
-        // Approvals and questions neither wait for nor use up the global cap.
-        if !mustDeliver(kind) { globalLimiter.record(now) }
-        return nil
-    }
-
     /// A push that can be dropped still waits this long for a team chat's
     /// slot — per-second limits (Feishu, Slack) free up that fast.
     public static let dropGrace: TimeInterval = 5

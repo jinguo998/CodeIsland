@@ -1,9 +1,5 @@
 import Foundation
-#if canImport(SQLite3)
 import SQLite3
-#else
-import DesktopSQLite
-#endif
 
 /// A single Warp pane that matches a working directory query.
 public struct WarpPaneMatch: Equatable {

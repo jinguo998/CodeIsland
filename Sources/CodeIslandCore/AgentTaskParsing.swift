@@ -1,7 +1,5 @@
 import Foundation
-#if canImport(Darwin)
 import Darwin
-#endif
 
 /// A checklist tool an agent can call. Names are matched case- and
 /// separator-insensitively because forks re-spell them (`todo_write`,
@@ -489,7 +487,7 @@ public enum AgentTaskTranscript {
         var offset = 0
         while offset < length {
             let found = nameMarker.withUnsafeBytes { needle in
-                findTaskMarker(ptr + offset, length - offset, needle.baseAddress, needle.count)
+                memmem(ptr + offset, length - offset, needle.baseAddress, needle.count)
             }
             guard let found else { return false }
             let valueStart = UnsafeRawPointer(ptr).distance(to: UnsafeRawPointer(found)) + nameMarker.count
@@ -532,27 +530,7 @@ public enum AgentTaskTranscript {
 
     private static func contains(_ ptr: UnsafePointer<UInt8>, length: Int, marker: [UInt8]) -> Bool {
         marker.withUnsafeBytes { needle in
-            findTaskMarker(ptr, length, needle.baseAddress, needle.count) != nil
+            memmem(ptr, length, needle.baseAddress, needle.count) != nil
         }
     }
-}
-
-// Darwin provides memmem; the Windows CRT and Swift's Glibc module expose
-// memchr and memcmp. Keep the transcript scanner on borrowed bytes on all hosts.
-private func findTaskMarker(_ bytes: UnsafeRawPointer, _ length: Int,
-                            _ marker: UnsafeRawPointer?, _ count: Int) -> UnsafeRawPointer? {
-    guard let marker, count > 0, length >= count else { return nil }
-    #if canImport(Darwin)
-    return memmem(bytes, length, marker, count).map(UnsafeRawPointer.init)
-    #else
-    let first = Int32(marker.load(as: UInt8.self))
-    var offset = 0
-    while offset <= length - count {
-        guard let ptr = memchr(bytes + offset, first, length - count - offset + 1) else { return nil }
-        let match = UnsafeRawPointer(ptr)
-        if memcmp(match, marker, count) == 0 { return match }
-        offset = bytes.distance(to: match) + 1
-    }
-    return nil
-    #endif
 }

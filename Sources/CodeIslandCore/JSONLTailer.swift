@@ -1,7 +1,5 @@
 import Foundation
-#if canImport(Darwin)
 import Darwin
-#endif
 
 public enum ConversationTurnStatus: Equatable, Sendable {
     case processing
@@ -110,7 +108,6 @@ public struct ConversationTailDelta: Equatable, Sendable {
 public final class JSONLTailer: @unchecked Sendable {
     public typealias DeltaHandler = @Sendable (ConversationTailDelta) -> Void
 
-    #if canImport(Darwin)
     private final class Watch {
         let sessionId: String
         var filePath: String
@@ -409,8 +406,6 @@ public final class JSONLTailer: @unchecked Sendable {
         return data
     }
 
-    #endif
-
     // MARK: - Pure parsing (exposed for tests)
 
     public struct ScanResult: Equatable {
@@ -553,17 +548,6 @@ public final class JSONLTailer: @unchecked Sendable {
         guard kind != .irrelevant else { return }
 
         guard let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else { return }
-        apply(record: json, into: &delta)
-    }
-
-    /// A decoded transcript row from a file watcher or provider adapter.
-    public static func scanRecord(_ json: [String: Any]) -> ScanResult.Delta {
-        var delta = ScanResult.Delta()
-        apply(record: json, into: &delta)
-        return delta
-    }
-
-    private static func apply(record json: [String: Any], into delta: inout ScanResult.Delta) {
         if json["isMeta"] as? Bool == true { return }
 
         // Checklist progress rides on rows this scanner already decodes

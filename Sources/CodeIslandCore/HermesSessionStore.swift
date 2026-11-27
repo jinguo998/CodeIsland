@@ -1,9 +1,5 @@
 import Foundation
-#if canImport(SQLite3)
 import SQLite3
-#else
-import DesktopSQLite
-#endif
 
 /// A Hermes Agent session as Hermes itself stores it: `$HERMES_HOME/state.db`
 /// (SQLite in WAL mode; tables `sessions` and `messages`, hermes_state_common.py).

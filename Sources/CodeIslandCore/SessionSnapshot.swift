@@ -509,47 +509,6 @@ public struct SessionSnapshot: Sendable {
         }
     }
 
-    /// Apply one normalized tool event to the visible tool and its history.
-    public mutating func applyToolStep(_ event: HookEvent, eventName: String, maxHistory: Int) {
-        let isWaiting = status == .waitingApproval || status == .waitingQuestion
-        switch eventName {
-        case "PreToolUse":
-            if !isWaiting {
-                self.status = .running
-                self.currentTool = event.activityLabel
-                self.currentToolUseId = event.toolUseId
-                self.toolDescription = event.toolDescription
-            }
-        case "PostToolUse", "PostToolUseFailure":
-            let success = eventName == "PostToolUse"
-            if finishesAnotherToolUse(event) {
-                // An earlier tool's step, overtaken by the next tool's start:
-                // it is recorded from its own payload, and the running tool
-                // stays up.
-                if let tool = event.activityLabel {
-                    self.recordTool(tool, description: event.toolDescription, success: success, agentType: nil, maxHistory: maxHistory)
-                }
-                break
-            }
-            if let tool = self.currentTool {
-                self.recordTool(tool, description: toolDescription, success: success, agentType: nil, maxHistory: maxHistory)
-            }
-            if !isWaiting {
-                self.status = .processing
-                self.currentTool = nil
-                self.toolDescription = nil
-            }
-        case "PermissionDenied":
-            if !isWaiting {
-                self.status = .processing
-                self.currentTool = nil
-                self.toolDescription = nil
-            }
-        default:
-            break
-        }
-    }
-
     /// Whether a PostToolUse / PostToolUseFailure finishes a tool use other
     /// than the one running. Remote tool steps do not wait for the island,
     /// so over SSH a large PostToolUse(A) can arrive after the PreToolUse(B)
@@ -630,16 +589,6 @@ public struct SessionSnapshot: Sendable {
         let result = computeDisplayNameLeafFromCursorProjectsPath(cwd)
         cursorLeafCache.setObject((result ?? "") as NSString, forKey: cwd as NSString)
         return result
-    }
-
-    /// Keep the original volume or UNC root when locating Cursor's project directory.
-    static func cursorProjectDirectory(in transcript: String) -> String? {
-        let path = ConfigPathIdentity.isWindowsAbsolute(transcript)
-            ? transcript.replacingOccurrences(of: #"\"#, with: "/") : transcript
-        guard let marker = path.range(of: "/.cursor/projects/") else { return nil }
-        let project = path[marker.upperBound...].prefix { $0 != "/" }
-        guard !project.isEmpty else { return nil }
-        return String(path[..<project.endIndex])
     }
 
     private static func computeDisplayNameLeafFromCursorProjectsPath(_ cwd: String) -> String? {
@@ -1429,8 +1378,39 @@ private func applyHookEvent(
             }
             sessions[sessionId]?.addRecentMessage(ChatMessage(isUser: true, text: prompt))
         }
-    case "PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionDenied":
-        sessions[sessionId]?.applyToolStep(event, eventName: eventName, maxHistory: maxHistory)
+    case "PreToolUse":
+        if !isWaiting {
+            sessions[sessionId]?.status = .running
+            sessions[sessionId]?.currentTool = event.activityLabel
+            sessions[sessionId]?.currentToolUseId = event.toolUseId
+            sessions[sessionId]?.toolDescription = event.toolDescription
+        }
+    case "PostToolUse", "PostToolUseFailure":
+        let success = eventName == "PostToolUse"
+        if sessions[sessionId]?.finishesAnotherToolUse(event) == true {
+            // An earlier tool's step, overtaken by the next tool's start:
+            // it is recorded from its own payload, and the running tool
+            // stays up.
+            if let tool = event.activityLabel {
+                sessions[sessionId]?.recordTool(tool, description: event.toolDescription, success: success, agentType: nil, maxHistory: maxHistory)
+            }
+            break
+        }
+        if let tool = sessions[sessionId]?.currentTool {
+            let desc = sessions[sessionId]?.toolDescription
+            sessions[sessionId]?.recordTool(tool, description: desc, success: success, agentType: nil, maxHistory: maxHistory)
+        }
+        if !isWaiting {
+            sessions[sessionId]?.status = .processing
+            sessions[sessionId]?.currentTool = nil
+            sessions[sessionId]?.toolDescription = nil
+        }
+    case "PermissionDenied":
+        if !isWaiting {
+            sessions[sessionId]?.status = .processing
+            sessions[sessionId]?.currentTool = nil
+            sessions[sessionId]?.toolDescription = nil
+        }
     case "SubagentStart":
         if !isWaiting {
             sessions[sessionId]?.status = .running
@@ -1923,8 +1903,12 @@ public func fillMissingParentMetadataFromSubagentEvent(
                   let first = roots.first, !first.isEmpty {
             sessions[sessionId]?.cwd = first
         } else if let tp = event.rawJSON["transcript_path"] as? String,
-                  let project = SessionSnapshot.cursorProjectDirectory(in: tp) {
-            sessions[sessionId]?.cwd = project
+                  tp.contains("/.cursor/projects/") {
+            let parts = tp.split(separator: "/")
+            if let idx = parts.firstIndex(of: "projects"), idx + 1 < parts.count {
+                let projectName = String(parts[idx + 1])
+                sessions[sessionId]?.cwd = "/\(parts[...idx].joined(separator: "/"))/\(projectName)"
+            }
         }
     }
 
@@ -2074,8 +2058,16 @@ public func extractMetadata(into sessions: inout [String: SessionSnapshot], sess
     } else if sessions[sessionId]?.cwd == nil
         || SessionSnapshot.isUnhelpfulHookCwd(sessions[sessionId]?.cwd ?? ""),
               let tp = event.rawJSON["transcript_path"] as? String,
-              let project = SessionSnapshot.cursorProjectDirectory(in: tp) {
-        sessions[sessionId]?.cwd = project
+              tp.contains("/.cursor/projects/") {
+        // Cursor: extract project dir from transcript_path
+        // e.g. ~/.cursor/projects/<project>/agent-transcripts/... → ~/.cursor/projects/<project>
+        // Must stay Cursor-scoped: Claude transcripts also contain a "projects"
+        // component (~/.claude/projects/<encoded>/…) that is not a workspace.
+        let parts = tp.split(separator: "/")
+        if let idx = parts.firstIndex(of: "projects"), idx + 1 < parts.count {
+            let projectName = String(parts[idx + 1])
+            sessions[sessionId]?.cwd = "/\(parts[...idx].joined(separator: "/"))/\(projectName)"
+        }
     } else if sessions[sessionId]?.cwd == nil, let cwd = eventCwd, !cwd.isEmpty {
         // Last resort: an unhelpful cwd ($HOME, ~/.claude) still beats nil —
         // transcript-based model lookup keys off it, and the display layer

@@ -267,7 +267,6 @@ final class JSONLTailerTests: XCTestCase {
 
     // MARK: - Integration: tail a real file
 
-    #if canImport(Darwin)
     func testAttachAndDetectAppendedLine() throws {
         let url = temporaryFileURL()
         try Data("".utf8).write(to: url)
@@ -618,8 +617,6 @@ final class JSONLTailerTests: XCTestCase {
         wait(for: [delivered], timeout: 2)
         tailer.detach(sessionId: "s1")
     }
-
-    #endif
 
     func testScanTailForAttachSkipsTheCutFirstRowAndReadsAnUnterminatedLastRow() throws {
         let url = temporaryFileURL()

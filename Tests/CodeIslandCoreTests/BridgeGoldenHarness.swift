@@ -142,9 +142,8 @@ struct BridgeGoldenNormalizer {
         if let array = value as? [Any] {
             return array.map { normalize($0, key: nil) }
         }
-        if key == "_ppid" || key == "_hook_ppid", let number = value as? NSNumber,
-           number !== NSNumber(value: true), number !== NSNumber(value: false),
-           let token = pidToken(number.intValue) {
+        if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+           key == "_ppid" || key == "_hook_ppid", let token = pidToken(number.intValue) {
             return token
         }
         if let string = value as? String {
@@ -179,7 +178,6 @@ struct BridgeGoldenNormalizer {
     }
 }
 
-#if canImport(Darwin)
 /// Runs codeisland-bridge on a fixture for real: under a process chain of
 /// stub executables at the fixture's paths (with the argv it names), against
 /// a stand-in island socket, with stdin from a file.
@@ -454,4 +452,3 @@ final class GoldenUnixServer {
         unlink(path)
     }
 }
-#endif

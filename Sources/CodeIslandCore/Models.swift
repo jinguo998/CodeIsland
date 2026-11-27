@@ -1,9 +1,5 @@
 import Foundation
 
-#if os(Windows)
-public typealias pid_t = Int32
-#endif
-
 /// A running Codex process that session discovery maps rollouts to.
 public enum CodexProcessRole: Equatable, Sendable {
     /// Codex Desktop's shared app-server: every Desktop thread, any cwd.
@@ -403,15 +399,11 @@ public struct HookEvent {
     /// A hook from its payload already parsed (HookServer parses one once to
     /// route it under Agent Sub-Sessions).
     public init?(json: [String: Any]) {
-        self.init(json: json, cardSessionId: nil)
-    }
-
-    public init?(json: [String: Any], cardSessionId: String?) {
         guard let eventName = HookEvent.firstString(in: json, keys: ["hook_event_name", "hookEventName", "event_name", "eventName"]) else {
             return nil
         }
         self.eventName = eventName
-        self.sessionId = cardSessionId ?? HookEvent.firstString(in: json, keys: ["session_id", "sessionId"])
+        self.sessionId = HookEvent.firstString(in: json, keys: ["session_id", "sessionId"])
             .map { HookEvent.cardSessionId(forRawSessionId: $0, in: json) }
         self.toolName = HookEvent.firstString(in: json, keys: ["tool_name", "toolName", "tool", "name"])
             ?? HookEvent.firstString(inNestedDictionary: json, containerKeys: ["tool", "payload", "data"], keys: ["name", "tool_name", "toolName"])
@@ -474,13 +466,6 @@ public struct HookEvent {
         }
     }
 
-    private static func toolPathLeaf(_ path: String) -> String {
-        // A local or SSH hook can report a drive or UNC path on any host.
-        let windowsPath = ConfigPathIdentity.isWindowsAbsolute(path)
-        let normalized = windowsPath ? path.replacingOccurrences(of: #"\"#, with: "/") : path
-        return (normalized as NSString).lastPathComponent
-    }
-
     public var toolDescription: String? {
         if isCodexEvent {
             return codexToolDescription
@@ -500,7 +485,7 @@ public struct HookEvent {
                 if let cmd { return cmd }
             case "Read", "read_file", "view_file":
                 if let fp = (input["AbsolutePath"] ?? input["file_path"]) as? String {
-                    let name = Self.toolPathLeaf(fp)
+                    let name = (fp as NSString).lastPathComponent
                     if let start = input["StartLine"] as? Int, let end = input["EndLine"] as? Int {
                         return "\(name):\(start)-\(end)"
                     }
@@ -511,15 +496,15 @@ public struct HookEvent {
                 }
             case "Edit", "apply_diff", "replace_file_content", "multi_replace_file_content":
                 if let fp = (input["TargetFile"] ?? input["file_path"]) as? String {
-                    return Self.toolPathLeaf(fp)
+                    return (fp as NSString).lastPathComponent
                 }
             case "Write", "write_to_file":
                 if let fp = (input["TargetFile"] ?? input["file_path"]) as? String {
-                    return Self.toolPathLeaf(fp)
+                    return (fp as NSString).lastPathComponent
                 }
             case "Grep", "search_files", "grep_search":
                 if let pattern = (input["Query"] ?? input["pattern"]) as? String {
-                    let path = ((input["SearchPath"] ?? input["path"]) as? String).map { " in \(Self.toolPathLeaf($0))" } ?? ""
+                    let path = ((input["SearchPath"] ?? input["path"]) as? String).map { " in \(($0 as NSString).lastPathComponent)" } ?? ""
                     return "\(pattern)\(path)"
                 }
             case "Glob":
@@ -539,7 +524,7 @@ public struct HookEvent {
                 return "Updating tasks"
             default:
                 // Generic: try common fields
-                if let fp = input["file_path"] as? String { return Self.toolPathLeaf(fp) }
+                if let fp = input["file_path"] as? String { return (fp as NSString).lastPathComponent }
                 if let pattern = input["pattern"] as? String { return pattern }
                 if let command = input["command"] as? String { return String(command.prefix(60)) }
                 if let prompt = input["prompt"] as? String { return String(prompt.prefix(40)) }
@@ -702,7 +687,7 @@ public struct HookEvent {
     private static func sanitizedFilename(_ path: String) -> String? {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        return sanitizedSummary(Self.toolPathLeaf(trimmed), limit: 80)
+        return sanitizedSummary((trimmed as NSString).lastPathComponent, limit: 80)
     }
 
     /// Credential / home-path redactions applied by ``sanitizedSummary(_:limit:)``,

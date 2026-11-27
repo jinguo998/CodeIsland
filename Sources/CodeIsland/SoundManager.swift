@@ -30,7 +30,7 @@ class SoundManager {
 
     /// A failing session tends to fail again seconds later (the user retries
     /// into the same rate limit); one error jingle per burst is the signal.
-    private var turnFailureDebouncer = SoundDebouncer(window: EventSoundRouting.turnFailureWindow)
+    private var turnFailureDebouncer = SoundDebouncer(window: 60)
 
     /// Where a *decided* event sound goes. Production plays it; a test installs
     /// a recorder and asserts on the names it receives.
@@ -141,8 +141,13 @@ class SoundManager {
         )
     }
 
+    /// Quiet-hours window test. Half-open [start, end) in minutes since
+    /// midnight; start > end spans midnight; start == end never mutes (an
+    /// all-day window would just be the master sound toggle).
     nonisolated static func isInQuietHours(minutesSinceMidnight m: Int, start: Int, end: Int) -> Bool {
-        EventSoundRouting.isInQuietHours(minutesSinceMidnight: m, start: start, end: end)
+        guard start != end else { return false }
+        if start < end { return m >= start && m < end }
+        return m >= start || m < end
     }
 
     /// Whether event sounds are held back right now for a reason that will

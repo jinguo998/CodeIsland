@@ -1,12 +1,5 @@
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
-#if canImport(CryptoKit)
 import CryptoKit
-#else
-import Crypto
-#endif
 
 // MARK: - Channels
 
