@@ -104,19 +104,19 @@ public enum DesktopPath {
     }
 }
 
-extension GitBranchReader {
-    static func desktopGitdirPointer(_ content: String, relativeTo directory: String) -> String? {
+enum DesktopGitBranchReader {
+    static func parseGitdirPointer(_ content: String, relativeTo directory: String) -> String? {
         let line = content.trimmingCharacters(in: .whitespacesAndNewlines)
         if line.hasPrefix("gitdir:") {
             let target = String(line.dropFirst("gitdir:".count)).trimmingCharacters(in: .whitespaces)
             if DesktopPath.isWindowsAbsolute(target) { return DesktopPath.withForwardSlashes(target) }
         }
-        return parseGitdirPointer(content, relativeTo: directory)
+        return GitBranchReader.parseGitdirPointer(content, relativeTo: directory)
     }
 
-    public static func desktopBranch(cwd: String) -> String? {
+    static func read(cwd: String) -> GitBranchInfo? {
         let start = DesktopPath.withForwardSlashes(cwd)
-        if let branch = read(cwd: start)?.branch { return branch }
+        if let info = GitBranchReader.read(cwd: start) { return info }
         // The Windows workspace can be deeper than the native 12-directory search;
         // a worktree pointer may also start with a drive letter or a UNC share.
         var directory = URL(fileURLWithPath: start, isDirectory: true)
@@ -124,16 +124,23 @@ extension GitBranchReader {
             let git = directory.appendingPathComponent(".git")
             var isDirectory: ObjCBool = false
             if FileManager.default.fileExists(atPath: git.path, isDirectory: &isDirectory) {
-                if isDirectory.boolValue { return headInfo(gitDir: git.path, isWorktree: false)?.branch }
+                if isDirectory.boolValue { return GitBranchReader.headInfo(gitDir: git.path, isWorktree: false) }
                 guard let pointer = try? String(contentsOf: git, encoding: .utf8) else { return nil }
-                guard let target = desktopGitdirPointer(pointer, relativeTo: directory.path) else { return nil }
-                return headInfo(gitDir: target, isWorktree: false)?.branch
+                guard let target = parseGitdirPointer(pointer, relativeTo: directory.path) else { return nil }
+                let gitDir = DesktopPath.isWindowsAbsolute(target) ? target.lowercased() : target
+                return GitBranchReader.headInfo(gitDir: target, isWorktree: gitDir.contains("/.git/worktrees/"))
             }
             let parent = directory.deletingLastPathComponent()
             if directory.path == parent.path { break }
             directory = parent
         }
         return nil
+    }
+}
+
+extension GitBranchReader {
+    public static func desktopBranch(cwd: String) -> String? {
+        DesktopGitBranchReader.read(cwd: cwd)?.branch
     }
 }
 

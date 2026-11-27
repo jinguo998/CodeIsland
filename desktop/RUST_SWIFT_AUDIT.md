@@ -17,6 +17,8 @@ python desktop/scripts/build-swift.py test --scratch .build/direct-audit
 python -c "from pathlib import Path; print(Path('.build/direct-audit/package/Targets/CodeIslandCore/Original/HookIntake.swift').samefile('Sources/CodeIslandCore/HookIntake.swift'))"
 ```
 
+原版 Git 测试在桌面测试目标中调用应用实际使用的路径适配器，覆盖带盘符的 worktree 和 submodule 指针。适配器首先调用原版读取器，并将 HEAD 解析委托给原版。macOS 测试目标照常验证原入口。Codex 的进程生命周期用例固定启动 `/bin/sh`，因此在 Linux 和 macOS 运行，其余 Codex 用例也在 Windows 运行。[Git 测试入口](swift/Tests/GitBranchReaderPlatform.swift) · [路径适配器](swift/Platform/CorePlatform.swift)
+
 ## 仍在复制的 Swift 源码
 
 下表覆盖 `swift_sources.py` 生成的全部 23 个产品源码文件。第一列是 `Selected*.swift` 文件名的中间部分，最后一列给出当前构建不能直接调用相应实现的具体原因。
