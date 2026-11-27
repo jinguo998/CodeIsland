@@ -301,3 +301,15 @@ fn codex_desktop_namespace_keeps_cli_with_the_same_thread_id_separate() {
     assert_eq!(desktop.session_id, "codexapp:thread");
     assert_eq!(desktop.terminal_kind.as_deref(), Some("codex"));
 }
+
+#[test]
+fn hermes_emits_one_completion_for_a_settled_reply_and_stop() {
+    let mut store = SessionStore::default();
+    let payload = r#"{"session_id":"hermes-turn", "last_assistant_message":"done"}"#;
+    let reply = normalize("hermes", "post_llm_call", payload, None).unwrap();
+    assert_eq!(reply.event_type, AgentEventType::Message);
+    assert!(!store.apply(&reply).ended_turn);
+    let stop = normalize("hermes", "on_session_end", payload, None).unwrap();
+    assert_eq!(stop.event_type, AgentEventType::TurnEnd);
+    assert!(store.apply(&stop).ended_turn);
+}

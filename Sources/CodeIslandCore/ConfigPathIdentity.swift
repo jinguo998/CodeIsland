@@ -82,9 +82,14 @@ public enum ConfigPathIdentity {
     }
 
     private static func realPath(_ path: String) -> String? {
+        #if os(Windows)
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        return URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        #else
         guard let pointer = realpath(path, nil) else { return nil }
         defer { free(pointer) }
         return String(cString: pointer)
+        #endif
     }
 
     /// `.` and `..` collapsed textually, for a relative symlink target joined

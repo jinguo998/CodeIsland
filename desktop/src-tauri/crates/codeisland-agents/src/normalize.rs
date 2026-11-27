@@ -207,48 +207,27 @@ fn map_event_type(installed: &str, wire: &str) -> AgentEventType {
 }
 
 fn map_one(name: &str) -> Option<AgentEventType> {
-    Some(match name.trim() {
-        "SessionStart" | "session_start" | "sessionStart" | "on_session_start" | "agentSpawn"
-        | "TaskStart" => AgentEventType::SessionStart,
-        "SessionEnd" | "session_end" | "sessionEnd" | "on_session_finalize" | "on_session_reset" => {
-            AgentEventType::SessionEnd
-        }
-        "UserPromptSubmit" | "user_prompt_submit" | "userPromptSubmitted" | "userPromptSubmit"
-        | "beforeSubmitPrompt" | "pre_llm_call" | "TaskResume" => AgentEventType::UserPrompt,
-        "PreToolUse" | "pre_tool_use" | "preToolUse" | "pre_tool_call"
-        | "beforeReadFile" => AgentEventType::ToolStart,
-        // Gemini's BeforeTool is an approval hook. Cursor's shell/MCP gates
-        // are informational: the original never holds a Cursor hook, so they
-        // are tool starts and the reply is empty.
-        "BeforeTool" => AgentEventType::PermissionRequest,
-        "beforeShellExecution" | "beforeMCPExecution" => AgentEventType::ToolStart,
-        "PostToolUse" | "post_tool_use" | "postToolUse" | "post_tool_call" | "AfterTool"
-        | "afterShellExecution" | "afterFileEdit" | "afterMCPExecution"
-        | "PostToolUseFailure" | "post_tool_use_failure" | "postToolUseFailure" => {
-            AgentEventType::ToolEnd
-        }
-        "PermissionRequest" | "permission_request" | "permissionRequest" => {
-            AgentEventType::PermissionRequest
-        }
-        "Notification" | "notification" | "afterAgentThought" | "errorOccurred" => {
-            AgentEventType::Notification
-        }
-        "Stop" | "stop" | "on_session_end" | "post_llm_call" | "AfterAgentResponse"
-        | "TaskComplete" | "TaskCancel" => AgentEventType::TurnEnd,
-        "StopFailure" | "stop_failure" | "stopFailure" => AgentEventType::TurnFailed,
-        // Compaction is background housekeeping; it must not revive an idle
-        // card or surface as a reply.
-        "PreCompact" | "pre_compact" | "PostCompact" | "post_compact" | "preCompact"
-        | "postCompact" => AgentEventType::Heartbeat,
-        "SubagentStart" | "subagent_start" | "subagentStart" | "BeforeAgent" => {
-            AgentEventType::SubagentStart
-        }
-        "SubagentStop" | "subagent_stop" | "subagentStop" | "AfterAgent" => {
-            AgentEventType::SubagentEnd
-        }
+    // Failures finish a turn in the original normalizer, while their raw wire
+    // name still drives the error presentation.
+    let raw = name.trim();
+    if matches!(raw, "StopFailure" | "stop_failure" | "stopFailure") {
+        return Some(AgentEventType::TurnFailed);
+    }
+    let canonical: String = codeisland_swift::call(c"normalizeEvent", raw);
+    Some(match canonical.as_str() {
+        "SessionStart" => AgentEventType::SessionStart,
+        "SessionEnd" => AgentEventType::SessionEnd,
+        "UserPromptSubmit" => AgentEventType::UserPrompt,
+        "PreToolUse" => AgentEventType::ToolStart,
+        "PostToolUse" | "PostToolUseFailure" | "postToolUseFailure" | "PermissionDenied" => AgentEventType::ToolEnd,
+        "PermissionRequest" | "permissionRequest" => AgentEventType::PermissionRequest,
+        "Notification" => AgentEventType::Notification,
+        "Stop" | "AfterAgentResponse" | "TaskRoundComplete" => AgentEventType::TurnEnd,
+        "AgentTurnSettled" => AgentEventType::Message,
+        "PreCompact" | "PostCompact" | "preCompact" | "postCompact" => AgentEventType::Heartbeat,
+        "SubagentStart" | "subagentStart" => AgentEventType::SubagentStart,
+        "SubagentStop" | "subagentStop" => AgentEventType::SubagentEnd,
         "Interrupt" | "interrupt" => AgentEventType::Interrupt,
-        // A denied permission is a failed tool step, not a failed turn.
-        "PermissionDenied" | "permission_denied" => AgentEventType::ToolEnd,
         _ => return None,
     })
 }

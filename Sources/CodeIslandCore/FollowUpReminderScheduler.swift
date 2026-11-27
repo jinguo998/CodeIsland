@@ -1,7 +1,7 @@
 import Foundation
 
 /// What a follow-up reminder is about.
-public enum FollowUpReminderKind: String, Sendable, CaseIterable {
+public enum FollowUpReminderKind: String, Codable, Sendable, CaseIterable {
     /// A permission request still waiting for allow / deny.
     case approval
     /// A question (AskUserQuestion, Notification question, Codex
@@ -24,7 +24,7 @@ public enum FollowUpReminderKind: String, Sendable, CaseIterable {
 /// and card, and any push channel wired to `FollowUpReminderController`).
 public struct FollowUpReminder: Equatable, Sendable {
     /// Where the waiting item lives, and so what a reminder can do about it.
-    public enum Origin: String, Equatable, Sendable {
+    public enum Origin: String, Codable, Equatable, Sendable {
         /// The island holds it: a queued approval / question, or a finished
         /// turn. Its card can be shown again.
         case island
@@ -36,7 +36,7 @@ public struct FollowUpReminder: Equatable, Sendable {
         case displayOnly
     }
 
-    public enum Delivery: String, Equatable, Sendable {
+    public enum Delivery: String, Codable, Equatable, Sendable {
         /// Delivered locally at its due time.
         case onTime
         /// Came due while local reminders were held back (screen locked,
@@ -295,6 +295,14 @@ public struct FollowUpReminderScheduler: Sendable {
             waitingSince: now, anchor: now, delivered: 0, owed: false, done: false, synced: false,
             turnFailed: turnFailed
         )
+    }
+
+    /// A delivery handed to another thread can outlive the wait it belonged to.
+    public func isCurrent(_ reminder: FollowUpReminder) -> Bool {
+        guard let entry = entries[Key(reminder.kind, reminder.sessionId)],
+              entry.waitingSince == reminder.waitingSince, entry.requestId == reminder.requestId else { return false }
+        if reminder.delivery == .deferred { return entry.owed && entry.delivered + 1 == reminder.attempt }
+        return entry.delivered == reminder.attempt
     }
 
     /// Hand back a reminder `collectDue` just produced that reached nobody:

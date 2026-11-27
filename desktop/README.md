@@ -1,13 +1,12 @@
 # CodeIsland Desktop
 
-A clean-room Tauri 2 + React rewrite of the macOS CodeIsland AI-agent status
-island for Windows. The Rust workspace lives in `src-tauri/`; the React UI is
-built with Vite.
+CodeIsland's Windows shell uses Tauri 2 and React. Cargo builds the macOS Swift sources for hook event names, follow-up reminders and Claude quota handling into a native library used by the desktop app and hook client. The Windows installers include the Swift runtime.
 
 ## Prerequisites
 
 - Windows 10/11 (WebView2 is installed by the Tauri installer/bundler)
 - Node.js 20+ and npm
+- Swift 6.2.3 or later and Python 3 for native builds (`winget install --id Swift.Toolchain -e`)
 - Rust stable (`rustup default stable`) with the MSVC toolchain
 - Visual Studio Build Tools with the "Desktop development with C++" workload
 - WebView2 runtime (present on current Windows; the Tauri docs have the

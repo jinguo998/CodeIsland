@@ -50,6 +50,10 @@ try {
         }
         Copy-Item $source (Join-Path $binaries "$name-$triple.exe") -Force
     }
+    $swiftRuntime = Join-Path $outputDir "swift-core"
+    $bundledRuntime = Join-Path $binaries "swift-core"
+    New-Item -ItemType Directory -Path $bundledRuntime -Force | Out-Null
+    Get-ChildItem -LiteralPath $swiftRuntime -File | Copy-Item -Destination $bundledRuntime -Force
     Write-Host "    staged sidecars in $binaries" -ForegroundColor Green
 }
 finally {

@@ -5,6 +5,7 @@ edition = "2024"
 description = "Push notifications, BLE Buddy, remote SSH and LAN sync"
 
 [dependencies]
+codeisland-swift = { path = "../codeisland-swift" }
 base64 = "0.22"
 percent-encoding = "2"
 ring = "0.17"

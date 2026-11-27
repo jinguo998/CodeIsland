@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "resources": {
+      "binaries/swift-core/": "swift-core/"
+    }
+  }
+}

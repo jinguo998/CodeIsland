@@ -886,6 +886,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "codeisland-domain",
+ "codeisland-swift",
  "dirs 6.0.0",
  "serde",
  "serde_json",
@@ -947,6 +948,7 @@ name = "codeisland-domain"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "codeisland-swift",
  "indexmap 2.14.2",
  "regex",
  "serde",
@@ -982,6 +984,7 @@ dependencies = [
  "btleplug",
  "chrono",
  "codeisland-domain",
+ "codeisland-swift",
  "futures-util",
  "percent-encoding",
  "reqwest 0.12.28",
@@ -1030,6 +1033,15 @@ dependencies = [
  "tokio",
  "tracing",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "codeisland-swift"
+version = "0.1.0"
+dependencies = [
+ "libloading",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

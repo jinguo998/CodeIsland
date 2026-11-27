@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// The Claude Code OAuth login, as Claude Code itself stores it.
 public struct ClaudeOAuthCredential: Equatable, Sendable {
@@ -36,6 +39,7 @@ public enum ClaudeCredentialStore {
         )
     }
 
+    #if os(macOS)
     /// Raw item data from the login keychain, read through `/usr/bin/security`.
     ///
     /// Claude Code stores the item with that same tool, so `security` is on
@@ -108,6 +112,8 @@ public enum ClaudeCredentialStore {
         return bytes.isEmpty ? nil : bytes
     }
 
+    #endif
+
     /// File fallback (`~/.claude/.credentials.json`) used by Claude Code where
     /// no keychain is available.
     public static func readFile(claudeHome: String = ClaudeConfigPaths.configDir()) -> Data? {
@@ -115,7 +121,9 @@ public enum ClaudeCredentialStore {
     }
 
     public static func load() -> ClaudeOAuthCredential? {
+        #if os(macOS)
         if let data = readKeychain(), let cred = parse(data) { return cred }
+        #endif
         if let data = readFile(), let cred = parse(data) { return cred }
         return nil
     }

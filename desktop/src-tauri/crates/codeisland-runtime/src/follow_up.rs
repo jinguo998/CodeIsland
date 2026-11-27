@@ -42,7 +42,8 @@ impl FollowUps {
             self.scheduler.sync(kind, Origin::Island, held, now);
             self.scheduler.sync(kind, Origin::DisplayOnly, display_only, now);
         }
-        self.scheduler.retain_completions(|id| completed(store, id));
+        let completions = store.sessions().keys().map(String::as_str).filter(|id| completed(store, id)).collect::<Vec<_>>();
+        self.scheduler.retain_completions(&completions);
         self.hinted.retain(|key, request_id| still_pending(store, key, request_id.as_deref()));
     }
 
@@ -50,7 +51,7 @@ impl FollowUps {
         match surface {
             IslandSurface::SessionList => {
                 self.hinted.clear();
-                self.scheduler.retain_completions(|_| false);
+                self.scheduler.retain_completions(&[]);
             }
             IslandSurface::ApprovalCard { session_id, .. } => {
                 self.hinted.remove(&Key::new(Kind::Approval, session_id));
