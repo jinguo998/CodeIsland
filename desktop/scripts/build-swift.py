@@ -22,7 +22,7 @@ CORE = (
     "EventNormalizer", "FollowUpReminderScheduler", "RemoteReconnectPolicy",
 )
 APP_TESTS = ("SQLiteReaderClosedWALTests",)
-TESTS = ("DisplayOnlyWaitTests", "TurnFailureSoundTests", "SoundVolumeCurveTests", "SessionDiscoveryTests", "CodexAppServerProtocolTests", "GitBranchReaderTests", "CursorHookPayloadTests", "HookIntakeGoldenTests", "HookEdgeFactsTests", "BridgeGoldenHarness", "BridgeGoldenFixtures",
+TESTS = ("JSONLTailerTests", "JSONLTailerCursorQuestionTests", "DisplayOnlyWaitTests", "TurnFailureSoundTests", "SoundVolumeCurveTests", "SessionDiscoveryTests", "CodexAppServerProtocolTests", "GitBranchReaderTests", "CursorHookPayloadTests", "HookIntakeGoldenTests", "HookEdgeFactsTests", "BridgeGoldenHarness", "BridgeGoldenFixtures",
          "BridgeGoldenExpectations", "AntigravityHookContractTests", "GrokHookForwardingPolicyTests", "ESP32ProtocolTests", "AppleCompanionPayloadTests", "ClaudeQuotaTests", "ClaudeQuotaSchedulerTests", "FollowUpReminderSchedulerTests",
          "RemoteReconnectPolicyTests", "ClaudeUsageScannerTests", "ModelLabelTests",
          "CoworkSessionTests", "CoworkAuditLogTests", "AgentTaskListTests", "AttentionPolicyTests", "DerivedSessionStateTests",

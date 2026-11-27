@@ -121,16 +121,37 @@ struct DesktopSessions {
     }
 }
 
-private struct TranscriptKind: Encodable {
+private struct TranscriptPresentation: Encodable {
+    let prompt: String?
+    let reply: String?
+    let publicOutput: String?
     let recap: String?
     let checklist: Bool
 }
 
 func classifyTranscript(_ data: Data) throws -> Data {
-    let row = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-    let recap = SessionRecap.from(transcriptLine: row)
-    let events = AgentTaskTranscript.events(fromLine: row)
-    return try JSONEncoder().encode(TranscriptKind(recap: recap?.text, checklist: !events.isEmpty))
+    var row = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+    // CodeBuddy's role records add a message envelope to the Cursor shape.
+    if row["type"] as? String == "message" {
+        let message = row["message"] as? [String: Any]
+        if let role = (row["role"] ?? message?["role"]) as? String {
+            row.removeValue(forKey: "type")
+            row["role"] = role
+        }
+    }
+    let delta = JSONLTailer.scanRecord(row)
+    let type = row["type"] as? String
+    let codex = type == "event_msg" || type == "response_item"
+    let publicOutput = codex ? delta.lastAssistantMessage : nil
+    var history = delta.lastAssistantMessage
+    if history == nil, type == "response_item", let payload = row["payload"] as? [String: Any],
+       payload["type"] as? String == "message", payload["role"] as? String == "assistant" {
+        // Older rollouts store public replies as plain text or generic text blocks.
+        history = JSONLTailer.extractText(from: payload["content"])
+    }
+    let synthetic = row["isCompactSummary"] as? Bool == true || row["isSidechain"] as? Bool == true
+    return try JSONEncoder().encode(TranscriptPresentation(prompt: synthetic ? nil : delta.lastUserPrompt,
+        reply: history, publicOutput: publicOutput, recap: delta.sessionRecap?.text, checklist: !delta.taskEvents.isEmpty))
 }
 
 extension DesktopSessions {

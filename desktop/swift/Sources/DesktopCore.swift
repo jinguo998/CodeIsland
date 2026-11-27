@@ -69,7 +69,7 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
     let decoder = JSONDecoder()
     let encoder = JSONEncoder()
     switch op {
-    case "claude.readRecord", "claude.recordID", "codex.storeRows", "codex.rolloutTurn", "codex.origin", "codex.visibleStatus":
+    case "claude.readRecord", "claude.recordID", "codex.storeRows", "codex.rolloutTurn", "codex.header", "codex.origin", "codex.visibleStatus":
         return try discoveryOperation(op, data)
     case "codex.rpc", "codex.questions", "codex.threadStatus", "codex.questionResult":
         return try codexMessage(op, data)

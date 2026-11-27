@@ -29,6 +29,16 @@ func discoveryOperation(_ operation: String, _ data: Data) throws -> Data {
         let path = try decoder.decode(String.self, from: data)
         let turn = CodexRollout.latestTurnStatus(path: path, requireFinalNewline: true)
         return try encoder.encode(turn.map { $0 == .processing ? "running" : "settled" })
+    case "codex.header":
+        struct Header: Encodable { let id: String?; let origin: String; let parent: String?; let title: String? }
+        let payload = try JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed) as? [String: Any] ?? [:]
+        let metadata = CodexRollout.subagent(in: payload).metadata
+        let source = payload["source"]
+        let origin = CodexRollout.origin(originator: payload["originator"] as? String, source: source as? String,
+                                         isSubagentSource: source is [String: Any])
+        let title = metadata.flatMap { $0.agentNickname ?? (payload["agent_nickname"] as? String) ?? $0.agentType }
+        return try encoder.encode(Header(id: (payload["id"] ?? payload["session_id"]) as? String,
+                                         origin: origin.rawValue, parent: metadata?.parentThreadId, title: title))
     case "codex.origin":
         struct Source: Decodable { let originator: String?; let source: String?; let subagent: Bool }
         let args = try decoder.decode(Source.self, from: data)

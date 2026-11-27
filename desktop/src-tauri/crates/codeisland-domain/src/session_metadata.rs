@@ -11,23 +11,32 @@ pub enum TranscriptMetadata {
 }
 
 #[derive(Deserialize)]
-struct TranscriptKind {
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptPresentation {
+    pub prompt: Option<String>,
+    pub reply: Option<String>,
+    pub public_output: Option<String>,
     recap: Option<String>,
     checklist: bool,
 }
 
-fn transcript_metadata(row: &Value) -> Option<TranscriptMetadata> {
-    let kind: TranscriptKind = codeisland_swift::call(c"transcript.kind", row);
-    kind.recap.map(TranscriptMetadata::Recap)
-        .or_else(|| kind.checklist.then(|| TranscriptMetadata::Checklist(row.clone())))
+impl TranscriptPresentation {
+    pub fn read(row: &Value) -> Self {
+        codeisland_swift::call(c"transcript.kind", row)
+    }
+
+    pub fn metadata(&self, row: &Value) -> Option<TranscriptMetadata> {
+        self.recap.clone().map(TranscriptMetadata::Recap)
+            .or_else(|| self.checklist.then(|| TranscriptMetadata::Checklist(row.clone())))
+    }
 }
 
 pub fn claude_transcript_metadata(row: &Value) -> Option<TranscriptMetadata> {
-    transcript_metadata(row)
+    TranscriptPresentation::read(row).metadata(row)
 }
 
 pub fn codex_transcript_checklist(payload: &Value) -> Option<TranscriptMetadata> {
-    transcript_metadata(&json!({ "type": "response_item", "payload": payload }))
+    claude_transcript_metadata(&json!({ "type": "response_item", "payload": payload }))
 }
 
 pub(crate) fn apply_transcript_checklist(

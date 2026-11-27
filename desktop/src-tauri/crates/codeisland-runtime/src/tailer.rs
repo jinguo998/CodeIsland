@@ -25,7 +25,7 @@ use chrono::{DateTime, Utc};
 use codeisland_domain::{
     AgentEvent, AgentEventType, AgentKind, CODEX_DESKTOP_SESSION_PREFIX, codex_desktop_session_id,
 };
-use codeisland_domain::session_metadata::{claude_transcript_metadata, codex_transcript_checklist};
+use codeisland_domain::session_metadata::{TranscriptPresentation, codex_transcript_checklist};
 use serde_json::Value;
 use tokio::task::JoinHandle;
 
@@ -404,7 +404,7 @@ fn save_offsets(path: &Path, cursors: &HashMap<PathBuf, FileCursor>, check_file_
 pub(crate) struct TranscriptMeta {
     pub session_id: Option<String>,
     pub parent_session_id: Option<String>,
-    codex_worker_title: Option<String>,
+    codex_header: Option<CodexHeader>,
     pub cwd: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
@@ -597,7 +597,7 @@ fn tail_file(
 
 fn reconcile_codex_worker(runtime: &Runtime, meta: &TranscriptMeta, path: &str) {
     if let (Some(child), Some(parent)) = (meta.session_id.as_deref(), meta.parent_session_id.as_deref()) {
-        runtime.reconcile_codex_rollout_parent(child, parent, path, meta.codex_worker_title.as_deref());
+        runtime.reconcile_codex_rollout_parent(child, parent, path, meta.codex_header.as_ref().and_then(|header| header.title.as_deref()));
     }
 }
 
@@ -777,31 +777,12 @@ pub(crate) fn codex_origin(originator: Option<&str>, source: Option<&str>, subag
     }))
 }
 
-fn codex_rollout_is_desktop(payload: &Value) -> bool {
-    codex_origin(payload["originator"].as_str(), payload["source"].as_str(), payload["source"].is_object())
-        == CodexOrigin::Desktop
-}
-
-fn codex_rollout_parent(payload: &Value) -> Option<String> {
-    let subagent = payload.pointer("/source/subagent")?;
-    match subagent {
-        Value::Object(fields) if !fields.is_empty() => {
-            string_field(&subagent["thread_spawn"], &["parent_thread_id"])
-                .or_else(|| string_field(payload, &["parent_thread_id"]))
-        }
-        Value::String(name) if !name.is_empty() => string_field(payload, &["parent_thread_id"]),
-        _ => None,
-    }
-}
-
-fn codex_worker_title(payload: &Value) -> Option<String> {
-    let subagent = payload.pointer("/source/subagent")?;
-    let spawn = &subagent["thread_spawn"];
-    string_field(spawn, &["agent_nickname"])
-        .or_else(|| string_field(payload, &["agent_nickname"]))
-        .or_else(|| string_field(spawn, &["agent_role"]))
-        .or_else(|| string_field(subagent, &["other"]))
-        .or_else(|| subagent.as_str().and_then(non_empty))
+#[derive(Clone, Debug, serde::Deserialize)]
+struct CodexHeader {
+    id: Option<String>,
+    origin: CodexOrigin,
+    parent: Option<String>,
+    title: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
@@ -843,18 +824,13 @@ pub(crate) fn read_recovery_summary(
     let mut summary = RecoverySummary::default();
     if let Some(head) = read_head_line(path) {
         let head = head.trim_start_matches('\u{feff}');
-        if source == TranscriptSource::Codex
-            && let Ok(row) = serde_json::from_str::<Value>(head)
-            && row["type"] == "session_meta"
-        {
-            let payload = &row["payload"];
-            summary.raw_id = string_field(payload, &["id", "session_id"]);
-            summary.origin = codex_origin(
-                payload["originator"].as_str(), payload["source"].as_str(), payload["source"].is_object(),
-            );
-            summary.parent_id = codex_rollout_parent(payload);
-        }
         let _ = parse_line(source, head, &mut meta);
+        if let Some(header) = &meta.codex_header {
+            summary.raw_id = header.id.clone();
+            summary.origin = header.origin;
+            summary.parent_id = header.parent.clone();
+            summary.codex_worker_title = header.title.clone();
+        }
     }
     let start = size.saturating_sub(PREVIEW_BYTES);
     file.seek(SeekFrom::Start(start)).ok()?;
@@ -865,10 +841,14 @@ pub(crate) fn read_recovery_summary(
     for bytes in lines.filter(|line| line.last() == Some(&b'\n')) {
         let Ok(line) = std::str::from_utf8(bytes) else { continue };
         let line = line.trim_start_matches('\u{feff}');
-        if source == TranscriptSource::Claude && let Some(turn) = claude_turn(line) {
-            summary.turn = Some(turn);
-        }
         let Some(event) = parse_line(source, line, &mut meta) else { continue };
+        if source == TranscriptSource::Claude {
+            match event.event_type {
+                AgentEventType::UserPrompt => summary.turn = Some(RecoveredTurn::Running),
+                AgentEventType::TurnEnd | AgentEventType::TurnFailed => summary.turn = Some(RecoveredTurn::Settled),
+                _ => {}
+            }
+        }
         match event.event_type {
             AgentEventType::UserPrompt if event.text.is_some() => summary.last_prompt = event.text,
             AgentEventType::Message if event.text.is_some() => summary.last_message = event.text,
@@ -877,7 +857,6 @@ pub(crate) fn read_recovery_summary(
         if event.model.is_some() { meta.model = event.model; }
     }
     summary.cwd = meta.cwd;
-    summary.codex_worker_title = meta.codex_worker_title;
     summary.model = meta.model;
     summary.reasoning = meta.effort;
     if source == TranscriptSource::Claude {
@@ -887,17 +866,6 @@ pub(crate) fn read_recovery_summary(
         summary.turn = codex_turn(path);
     }
     Some(summary)
-}
-
-#[cfg(any(windows, test))]
-fn claude_turn(line: &str) -> Option<RecoveredTurn> {
-    let row: Value = serde_json::from_str(line).ok()?;
-    match row["type"].as_str()? {
-        "result" => Some(RecoveredTurn::Settled),
-        "user" if !row["isMeta"].as_bool().unwrap_or(false)
-            && chat_content(&row).and_then(extract_content_text).is_some() => Some(RecoveredTurn::Running),
-        _ => None,
-    }
 }
 
 fn codex_turn(path: &Path) -> Option<RecoveredTurn> {
@@ -912,24 +880,16 @@ fn parse_codex_line(line: &str, meta: &mut TranscriptMeta) -> Option<AgentEvent>
 
     match record_type {
         "session_meta" => {
-            if let Some(id) = payload
-                .get("id")
-                .and_then(Value::as_str)
-                .or_else(|| payload.get("session_id").and_then(Value::as_str))
-            {
-                let desktop = codex_rollout_is_desktop(&payload);
-                meta.session_id = Some(if desktop {
-                    codex_desktop_session_id(id)
-                } else {
-                    id.to_owned()
-                });
-                meta.parent_session_id = codex_rollout_parent(&payload)
-                    .map(|parent| if desktop { codex_desktop_session_id(&parent) } else { parent })
+            let header: CodexHeader = codeisland_swift::call(c"codex.header", &payload);
+            if let Some(id) = &header.id {
+                let namespaced = |id: &str| {
+                    if header.origin == CodexOrigin::Desktop { codex_desktop_session_id(id) } else { id.to_owned() }
+                };
+                meta.session_id = Some(namespaced(id));
+                meta.parent_session_id = header.parent.as_deref().map(namespaced)
                     .filter(|parent| Some(parent) != meta.session_id.as_ref());
-                if meta.parent_session_id.is_some() {
-                    meta.codex_worker_title = codex_worker_title(&payload);
-                }
             }
+            meta.codex_header = Some(header);
             if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
                 meta.cwd = Some(cwd.to_owned());
             }
@@ -949,24 +909,26 @@ fn parse_codex_line(line: &str, meta: &mut TranscriptMeta) -> Option<AgentEvent>
             }
             None
         }
-        "event_msg" => parse_event_msg(&payload, timestamp, meta),
-        "response_item" => parse_response_item(&payload, timestamp, meta),
+        "event_msg" => parse_event_msg(&value, timestamp, meta),
+        "response_item" => parse_response_item(&value, timestamp, meta),
         _ => None,
     }
 }
 
 fn parse_event_msg(
-    payload: &Value,
+    row: &Value,
     timestamp: DateTime<Utc>,
     meta: &TranscriptMeta,
 ) -> Option<AgentEvent> {
+    let payload = &row["payload"];
     let message_type = payload.get("type").and_then(Value::as_str)?;
+    let display = matches!(message_type, "user_message" | "agent_message").then(|| TranscriptPresentation::read(row));
     let (event_type, tool, text) = match message_type {
         "task_started" => (AgentEventType::UserPrompt, None, None),
         "user_message" => (
             AgentEventType::UserPrompt,
             None,
-            string_field(payload, &["message", "text"]),
+            display.as_ref().and_then(|content| content.prompt.clone()).or_else(|| string_field(payload, &["text"])),
         ),
         "task_complete" => (AgentEventType::TurnEnd, None, None),
         "turn_failed" => (
@@ -977,7 +939,7 @@ fn parse_event_msg(
         "agent_message" => (
             AgentEventType::Message,
             None,
-            string_field(payload, &["message", "text"]),
+            display.as_ref().and_then(|content| content.reply.clone()).or_else(|| string_field(payload, &["text"])),
         ),
         "agent_reasoning" => (
             AgentEventType::Heartbeat,
@@ -1002,9 +964,7 @@ fn parse_event_msg(
     let mut event = base_event(TranscriptSource::Codex, meta, event_type, timestamp)?;
     event.tool = tool;
     event.text = text;
-    if message_type == "agent_message" {
-        event.codex_transcript_output = string_field(payload, &["message"]);
-    }
+    event.codex_transcript_output = display.and_then(|content| content.public_output);
     if let Some(model) = string_field(payload, &["model"]) {
         event.model = Some(model);
     }
@@ -1012,10 +972,11 @@ fn parse_event_msg(
 }
 
 fn parse_response_item(
-    payload: &Value,
+    row: &Value,
     timestamp: DateTime<Utc>,
     meta: &TranscriptMeta,
 ) -> Option<AgentEvent> {
+    let payload = &row["payload"];
     let item_type = payload.get("type").and_then(Value::as_str)?;
     match item_type {
         "custom_tool_call" | "function_call" => {
@@ -1039,22 +1000,11 @@ fn parse_response_item(
             if payload.get("role").and_then(Value::as_str) != Some("assistant") {
                 return None;
             }
-            let content = payload.get("content")?;
-            let text = extract_content_text(content)?;
-            let mut event =
-                base_event(TranscriptSource::Codex, meta, AgentEventType::Message, timestamp)?;
+            let display = TranscriptPresentation::read(row);
+            let text = display.reply?;
+            let mut event = base_event(TranscriptSource::Codex, meta, AgentEventType::Message, timestamp)?;
             event.text = Some(text);
-            // Only explicit assistant output blocks enter the compact live
-            // preview. Older generic blocks remain readable in history.
-            if let Some(blocks) = content.as_array() {
-                let public_text = blocks.iter()
-                    .filter(|block| block.get("type").and_then(Value::as_str) == Some("output_text"))
-                    .filter_map(|block| block.get("text")?.as_str().and_then(non_empty))
-                    .collect::<Vec<_>>();
-                if !public_text.is_empty() {
-                    event.codex_transcript_output = Some(public_text.join("\n"));
-                }
-            }
+            event.codex_transcript_output = display.public_output;
             Some(event)
         }
         "reasoning" => {
@@ -1103,27 +1053,12 @@ fn parse_claude_line(
     }
     let record_type = value.get("type").and_then(Value::as_str)?;
     let timestamp = timestamp_of(&value);
-    let metadata = if source == TranscriptSource::Claude {
-        claude_transcript_metadata(&value)
-    } else {
-        None
-    };
+    let display = TranscriptPresentation::read(&value);
+    let metadata = (source == TranscriptSource::Claude).then(|| display.metadata(&value)).flatten();
 
     let mut event = match record_type {
         "user" | "USER_INPUT" => {
-            // A tool-result-only user row carries no prompt; `extract_content_text`
-            // returns None for it.
-            let text = chat_content(&value).and_then(extract_content_text).filter(|text| {
-                source != TranscriptSource::Claude
-                    || (value["isCompactSummary"] != true
-                        && value["isSidechain"] != true
-                        && ![
-                            "<command-name>",
-                            "<local-command-stdout>",
-                            "<local-command-stderr>",
-                            "<local-command-caveat>",
-                        ].iter().any(|tag| text.starts_with(tag)))
-            });
+            let text = display.prompt;
             let kind = if text.is_some() { AgentEventType::UserPrompt } else { AgentEventType::Heartbeat };
             if text.is_none() && metadata.is_none() { return None; }
             let mut event = base_event(source, meta, kind, timestamp)?;
@@ -1134,7 +1069,7 @@ fn parse_claude_line(
             if let Some(model) = chat_model(&value) {
                 meta.model = Some(model);
             }
-            let text = chat_content(&value).and_then(extract_content_text);
+            let text = display.reply;
             let kind = if text.is_some() { AgentEventType::Message } else { AgentEventType::Heartbeat };
             if text.is_none() && metadata.is_none() { return None; }
             let mut event = base_event(source, meta, kind, timestamp)?;
@@ -1165,15 +1100,6 @@ fn parse_claude_line(
     }?;
     event.transcript_metadata = metadata;
     Some(event)
-}
-
-/// Claude-style content lives in `message.content`, but flat formats sometimes
-/// put it at the top level.
-fn chat_content(value: &Value) -> Option<&Value> {
-    value
-        .get("message")
-        .and_then(|message| message.get("content"))
-        .or_else(|| value.get("content"))
 }
 
 fn chat_model(value: &Value) -> Option<String> {
@@ -1249,13 +1175,11 @@ fn parse_role_line(
         .and_then(Value::as_str)
         .or_else(|| message.get("role").and_then(Value::as_str))?;
     let timestamp = timestamp_of(value);
+    let display = TranscriptPresentation::read(value);
 
     match role {
         "user" => {
-            let text = message
-                .get("content")
-                .or_else(|| value.get("content"))
-                .and_then(extract_content_text)?;
+            let text = display.prompt?;
             let mut event = base_event(source, meta, AgentEventType::UserPrompt, timestamp)?;
             event.text = Some(text);
             Some(event)
@@ -1264,10 +1188,7 @@ fn parse_role_line(
             if let Some(model) = chat_model(value) {
                 meta.model = Some(model);
             }
-            let text = message
-                .get("content")
-                .or_else(|| value.get("content"))
-                .and_then(extract_content_text)?;
+            let text = display.reply?;
             let mut event = base_event(source, meta, AgentEventType::Message, timestamp)?;
             event.text = Some(text);
             Some(event)
@@ -1299,36 +1220,6 @@ fn base_event(
     event.raw_event_name =
         Some(format!("{}:{event_type:?}", source.raw_prefix()).to_ascii_lowercase());
     Some(event)
-}
-
-/// Extracts display text from a content field: either a plain string or an
-/// array of `{"type":"text","text":…}` blocks (Codex also uses `output_text`).
-/// Tool-use / tool-result / thinking blocks are skipped.
-fn extract_content_text(content: &Value) -> Option<String> {
-    match content {
-        Value::String(text) => non_empty(text),
-        Value::Array(blocks) => {
-            let mut parts = Vec::new();
-            for block in blocks {
-                let block_type = block
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .unwrap_or("text");
-                if !matches!(block_type, "text" | "output_text" | "input_text") {
-                    continue;
-                }
-                if let Some(text) = block.get("text").and_then(Value::as_str).and_then(non_empty) {
-                    parts.push(text);
-                }
-            }
-            if parts.is_empty() {
-                None
-            } else {
-                Some(parts.join("\n"))
-            }
-        }
-        _ => None,
-    }
 }
 
 fn string_field(payload: &Value, keys: &[&str]) -> Option<String> {
@@ -1626,6 +1517,11 @@ mod tests {
                 "source": {"subagent": {"thread_spawn": {"parent_thread_id": "parent"}}}
             }), "cli-worker", Some("parent")),
             (serde_json::json!({
+                "id": "nested-worker", "source": {"subagent": {"thread_spawn": {
+                    "metadata": [{"parent_thread_id": "parent", "agent_nickname": "Reviewer"}]
+                }}}
+            }), "nested-worker", Some("parent")),
+            (serde_json::json!({
                 "id": "desktop-root", "originator": "Codex Desktop",
                 "source": "vscode", "parent_thread_id": "unrelated-root"
             }), "codexapp:desktop-root", None),
@@ -1682,6 +1578,21 @@ mod tests {
         let parent = session(&runtime, "codexapp:parent");
         assert_eq!(parent.status, SessionStatus::Running);
         assert_eq!(parent.child_session_ids, ["codexapp:child"]);
+    }
+
+    #[test]
+    fn transcript_display_uses_the_original_cursor_and_claude_text_rules() {
+        let mut meta = TranscriptMeta { session_id: Some("fixture".into()), ..Default::default() };
+        let cursor = parse_line(TranscriptSource::Cursor,
+            r#"{"role":"user","message":{"content":"<timestamp>old</timestamp><user_query>Review this</user_query>"}}"#,
+            &mut meta).unwrap();
+        assert_eq!(cursor.text.as_deref(), Some("Review this"));
+        let claude = parse_line(TranscriptSource::Claude,
+            r#"{"type":"user","message":{"content":"<command-message>design</command-message><command-name>design</command-name><command-args>review</command-args>"}}"#,
+            &mut meta).unwrap();
+        assert_eq!(claude.text.as_deref(), Some("/design review"));
+        let private_input = r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"input_text","text":"context for the model"}]}}"#;
+        assert!(parse_line(TranscriptSource::Codex, private_input, &mut meta).is_none());
     }
 
     #[test]

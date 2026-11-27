@@ -477,43 +477,7 @@ enum CodexDiscovery {
             return .unavailable
         }
 
-        guard let source = payload["source"] as? [String: Any] else {
-            return .root
-        }
-        let threadId = (payload["id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-        let payloadParent = (payload["parent_thread_id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-        // Unit variants (`review`, `compact`, `memory_consolidation`) serialize as
-        // a bare string and only record their parent on the payload. Without
-        // one there is no spawn edge to fall back to either.
-        if let label = source["subagent"] as? String, !label.isEmpty {
-            guard let payloadParent else { return .root }
-            return .subagent(CodexSubagentMetadata(
-                parentThreadId: payloadParent,
-                agentType: label,
-                agentNickname: nil,
-                threadId: threadId
-            ))
-        }
-        guard let subagent = source["subagent"] as? [String: Any],
-              !subagent.isEmpty else {
-            return .root
-        }
-        // Spawned workers nest the parent under `source.subagent.thread_spawn`;
-        // auto-review (guardian) threads record it on the payload itself.
-        let parent = SessionDiscovery.firstStringRecursively(in: subagent, key: "parent_thread_id")
-            ?? payloadParent
-        guard let parent, !parent.isEmpty else { return .unavailable }
-
-        let agentType = SessionDiscovery.firstStringRecursively(in: subagent, key: "agent_role")
-            ?? subagent["other"] as? String
-            ?? subagent.keys.sorted().first
-        let nickname = SessionDiscovery.firstStringRecursively(in: subagent, key: "agent_nickname")
-        return .subagent(CodexSubagentMetadata(
-            parentThreadId: parent,
-            agentType: agentType,
-            agentNickname: nickname,
-            threadId: threadId
-        ))
+        return CodexRollout.subagent(in: payload)
     }
 
     static func codexSubagentMetadata(inTranscriptPath path: String) -> CodexSubagentMetadata? {
@@ -613,8 +577,8 @@ enum CodexDiscovery {
                     if let source = SQLiteReader.nonEmptySQLiteColumnString(statement, index: 5),
                        let data = source.data(using: .utf8),
                        let json = try? JSONSerialization.jsonObject(with: data) {
-                        agentType = agentType ?? SessionDiscovery.firstStringRecursively(in: json, key: "agent_role")
-                        nickname = nickname ?? SessionDiscovery.firstStringRecursively(in: json, key: "agent_nickname")
+                        agentType = agentType ?? CodexRollout.firstStringRecursively(in: json, key: "agent_role")
+                        nickname = nickname ?? CodexRollout.firstStringRecursively(in: json, key: "agent_nickname")
                     }
                     records[child] = CodexSpawnEdgeRecord(
                         metadata: CodexSubagentMetadata(

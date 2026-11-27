@@ -553,6 +553,17 @@ public final class JSONLTailer: @unchecked Sendable {
         guard kind != .irrelevant else { return }
 
         guard let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else { return }
+        apply(record: json, into: &delta)
+    }
+
+    /// A decoded transcript row from a file watcher or provider adapter.
+    public static func scanRecord(_ json: [String: Any]) -> ScanResult.Delta {
+        var delta = ScanResult.Delta()
+        apply(record: json, into: &delta)
+        return delta
+    }
+
+    private static func apply(record json: [String: Any], into delta: inout ScanResult.Delta) {
         if json["isMeta"] as? Bool == true { return }
 
         // Checklist progress rides on rows this scanner already decodes

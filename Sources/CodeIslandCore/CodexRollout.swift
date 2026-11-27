@@ -32,6 +32,67 @@ public enum CodexRollout {
         return .unknown
     }
 
+    public static func subagent(in payload: [String: Any]) -> CodexTranscriptSubagentInspection {
+        guard let source = payload["source"] as? [String: Any] else {
+            return .root
+        }
+        let threadId = (payload["id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let payloadParent = (payload["parent_thread_id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        // Unit variants (`review`, `compact`, `memory_consolidation`) serialize as
+        // a bare string and only record their parent on the payload. Without
+        // one there is no spawn edge to fall back to either.
+        if let label = source["subagent"] as? String, !label.isEmpty {
+            guard let payloadParent else { return .root }
+            return .subagent(CodexSubagentMetadata(
+                parentThreadId: payloadParent,
+                agentType: label,
+                agentNickname: nil,
+                threadId: threadId
+            ))
+        }
+        guard let subagent = source["subagent"] as? [String: Any],
+              !subagent.isEmpty else {
+            return .root
+        }
+        // Spawned workers nest the parent under `source.subagent.thread_spawn`;
+        // auto-review (guardian) threads record it on the payload itself.
+        let parent = firstStringRecursively(in: subagent, key: "parent_thread_id")
+            ?? payloadParent
+        guard let parent, !parent.isEmpty else { return .unavailable }
+
+        let agentType = firstStringRecursively(in: subagent, key: "agent_role")
+            ?? subagent["other"] as? String
+            ?? subagent.keys.sorted().first
+        let nickname = firstStringRecursively(in: subagent, key: "agent_nickname")
+        return .subagent(CodexSubagentMetadata(
+            parentThreadId: parent,
+            agentType: agentType,
+            agentNickname: nickname,
+            threadId: threadId
+        ))
+    }
+
+    public static func firstStringRecursively(in value: Any, key: String) -> String? {
+        if let dict = value as? [String: Any] {
+            if let string = dict[key] as? String,
+               !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return string
+            }
+            for child in dict.values {
+                if let found = firstStringRecursively(in: child, key: key) {
+                    return found
+                }
+            }
+        } else if let array = value as? [Any] {
+            for child in array {
+                if let found = firstStringRecursively(in: child, key: key) {
+                    return found
+                }
+            }
+        }
+        return nil
+    }
+
     /// Scan a rollout backwards in chunks until the latest lifecycle marker is
     /// found. This avoids both a full-file read and a fixed-tail limit while
     /// reusing `JSONLTailer`'s canonical Codex event interpretation.
