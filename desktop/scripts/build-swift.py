@@ -14,15 +14,15 @@ CORE = (
     "ClaudeSessionRecord", "ClaudeConfigPaths", "ConfigPathIdentity", "ExtraConfigDirs", "ClaudeDesktopCodeSession", "ClaudeQuota", "ClaudeQuotaClient", "ClaudeQuotaScheduler", "ClaudeUsageScanner", "ModelLabel",
     "GitBranchReader", "ESP32Protocol", "AppleCompanionPayload", "AppleCompanionBluetooth", "AgentTaskList", "AgentTaskParsing", "AttentionPolicy", "BackgroundCompactionFilter",
     "SQLiteReader", "CodexStateStore", "CodexRollout", "CoworkSession", "CoworkAuditLog", "CodexAppServerProtocol", "CodexHooksConfig", "CodexPermissionRules", "CodexThreadSubsession", "CursorHookPayload", "CursorSessionFolding", "DeclaredSubsession",
-    "EventSoundRouting", "SoundVolumeCurve", "SceneMuteState", "HermesHookPayload", "HermesSessionStore", "HostHarness", "JSONLTailer",
+    "DisplayOnlyWait", "AiWorkStatusMapper", "EventSoundRouting", "SoundVolumeCurve", "SceneMuteState", "HermesHookPayload", "HermesSessionStore", "HostHarness", "JSONLTailer",
     "Models",
-    "PushTransport", "PushChannel", "PushNotification", "PushPolicy", "IdleSessionRemoval", "SessionListOrdering", "SessionRecap", "SessionSnapshot",
+    "PushLocalization", "PushTransport", "PushChannel", "PushNotification", "PushPolicy", "IdleSessionRemoval", "SessionListOrdering", "SessionRecap", "SessionSnapshot",
     "SubsessionLink", "SubsessionRouter", "WarpPaneResolver",
     "HookIntake", "HookEdgeFacts", "AntigravityHookContract", "GrokHookForwardingPolicy", "GrokSessionPaths",
     "EventNormalizer", "FollowUpReminderScheduler", "RemoteReconnectPolicy",
 )
 APP_TESTS = ("SQLiteReaderClosedWALTests",)
-TESTS = ("TurnFailureSoundTests", "SoundVolumeCurveTests", "SessionDiscoveryTests", "CodexAppServerProtocolTests", "GitBranchReaderTests", "CursorHookPayloadTests", "HookIntakeGoldenTests", "HookEdgeFactsTests", "BridgeGoldenHarness", "BridgeGoldenFixtures",
+TESTS = ("DisplayOnlyWaitTests", "TurnFailureSoundTests", "SoundVolumeCurveTests", "SessionDiscoveryTests", "CodexAppServerProtocolTests", "GitBranchReaderTests", "CursorHookPayloadTests", "HookIntakeGoldenTests", "HookEdgeFactsTests", "BridgeGoldenHarness", "BridgeGoldenFixtures",
          "BridgeGoldenExpectations", "AntigravityHookContractTests", "GrokHookForwardingPolicyTests", "ESP32ProtocolTests", "AppleCompanionPayloadTests", "ClaudeQuotaTests", "ClaudeQuotaSchedulerTests", "FollowUpReminderSchedulerTests",
          "RemoteReconnectPolicyTests", "ClaudeUsageScannerTests", "ModelLabelTests",
          "CoworkSessionTests", "CoworkAuditLogTests", "AgentTaskListTests", "AttentionPolicyTests", "DerivedSessionStateTests",

@@ -1,4 +1,3 @@
-import CoreFoundation
 import Foundation
 import XCTest
 
@@ -143,8 +142,9 @@ struct BridgeGoldenNormalizer {
         if let array = value as? [Any] {
             return array.map { normalize($0, key: nil) }
         }
-        if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
-           key == "_ppid" || key == "_hook_ppid", let token = pidToken(number.intValue) {
+        if key == "_ppid" || key == "_hook_ppid", let number = value as? NSNumber,
+           number !== NSNumber(value: true), number !== NSNumber(value: false),
+           let token = pidToken(number.intValue) {
             return token
         }
         if let string = value as? String {

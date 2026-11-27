@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use chrono::{DateTime, TimeDelta, Utc};
 use codeisland_domain::{
@@ -23,22 +23,17 @@ impl FollowUps {
             self.hinted.clear();
             return;
         }
-        let queued: HashSet<&str> = store.pending().values()
-            .map(|request| request.session_id.as_str())
-            .collect();
-        for (kind, request_kind, status) in [
-            (Kind::Approval, RequestKind::Permission, SessionStatus::WaitingPermission),
-            (Kind::Question, RequestKind::Question, SessionStatus::WaitingAnswer),
-        ] {
+        let statuses: HashMap<_, _> = store.sessions().iter().map(|(id, session)| (id, session.status)).collect();
+        let queued: Vec<_> = store.pending().values().map(|request| &request.session_id).collect();
+        let mut waits: HashMap<Kind, Vec<String>> = codeisland_swift::call(c"push.displayWaits",
+            serde_json::json!({ "sessions": statuses, "queued": queued }));
+        for (kind, request_kind) in [(Kind::Approval, RequestKind::Permission), (Kind::Question, RequestKind::Question)] {
             let mut held = HashMap::new();
             for request in visible_requests(store, request_kind) {
                 held.entry(request.session_id.clone())
                     .or_insert_with(|| Some(request.event_id.clone()));
             }
-            let display_only = store.sessions().values()
-                .filter(|session| session.status == status && !queued.contains(session.session_id.as_str()))
-                .map(|session| (session.session_id.clone(), None))
-                .collect();
+            let display_only = waits.remove(&kind).unwrap_or_default().into_iter().map(|id| (id, None)).collect();
             self.scheduler.sync(kind, Origin::Island, held, now);
             self.scheduler.sync(kind, Origin::DisplayOnly, display_only, now);
         }

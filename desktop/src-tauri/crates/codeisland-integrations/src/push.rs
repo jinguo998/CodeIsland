@@ -58,12 +58,9 @@ impl PushChannel {
     }
 
     pub fn rate_limits(self) -> &'static [(usize, u64)] {
-        match self {
-            Self::DingTalk | Self::WeCom => &[(18, 60)],
-            Self::Lark => &[(90, 60), (4, 1)],
-            Self::Slack => &[(1, 1)],
-            _ => &[],
-        }
+        static LIMITS: std::sync::LazyLock<HashMap<String, Vec<(usize, u64)>>> =
+            std::sync::LazyLock::new(|| codeisland_swift::call(c"push.rateLimits", ()));
+        LIMITS.get(crate::push_channels::native_name(self)).map_or(&[], Vec::as_slice)
     }
 }
 
@@ -306,6 +303,10 @@ impl PushNotifier {
         })
     }
 
+    pub fn includes_details(&self) -> bool {
+        self.config.as_ref().is_none_or(|config| config.include_details)
+    }
+
     pub fn accepts(&self, kind: PushKind, reminder: bool) -> bool {
         let event = if reminder {
             "reminder"
@@ -474,12 +475,13 @@ async fn send_request(
     Err(PushError::RedirectRefused)
 }
 
-/// Deduplicates by event id and rate-limits to at most one push per session
-/// every five seconds. Both checks are local; nothing is persisted.
+/// Tracks IPC event replays and asks the shared Swift policy to admit events
+/// and reserve delivery slots for individual services.
 #[derive(Debug)]
 pub struct PushGate {
     seen: HashSet<String>,
-    last_sent: HashMap<String, Instant>,
+    core: codeisland_swift::Context,
+    clock: Option<Instant>,
     window: Duration,
 }
 
@@ -491,43 +493,51 @@ impl Default for PushGate {
 
 impl PushGate {
     pub fn new() -> Self {
-        Self {
-            seen: HashSet::new(),
-            last_sent: HashMap::new(),
-            window: Duration::from_secs(5),
-        }
+        Self::with_window(Duration::from_secs(5))
     }
 
     pub fn with_window(window: Duration) -> Self {
-        Self {
-            seen: HashSet::new(),
-            last_sent: HashMap::new(),
-            window,
-        }
+        Self { seen: HashSet::new(), core: codeisland_swift::Context::default(), clock: None, window }
+    }
+
+    fn seconds(&mut self, now: Instant) -> f64 {
+        now.saturating_duration_since(*self.clock.get_or_insert(now)).as_secs_f64()
     }
 
     pub fn should_send(&mut self, event_id: &str, session_id: &str) -> bool {
         self.should_send_at(event_id, session_id, Instant::now())
     }
 
-    /// `now` is injectable so the rate limit can be tested without sleeping.
     pub fn should_send_at(&mut self, event_id: &str, session_id: &str, now: Instant) -> bool {
-        if self.seen.contains(event_id) {
-            return false;
+        self.admit(event_id, session_id, "completion", None, Some(self.window), now)
+    }
+
+    pub fn should_send_event(&mut self, event_id: &str, session_id: &str, kind: PushKind, reminder: bool) -> bool {
+        let name = if reminder { "reminder" } else { crate::push_channels::event_name(kind) };
+        let request = matches!(kind, PushKind::Approval | PushKind::Question | PushKind::DisplayOnlyWait).then_some(event_id);
+        self.admit(event_id, session_id, name, request, None, Instant::now())
+    }
+
+    fn admit(&mut self, event_id: &str, session_id: &str, kind: &str, key: Option<&str>, window: Option<Duration>, now: Instant) -> bool {
+        if self.seen.contains(event_id) { return false; }
+        let now = self.seconds(now);
+        let allowed = self.core.call(c"push.admit", serde_json::json!({
+            "kind": kind, "session": session_id, "key": key, "now": now, "window": window.map(|value| value.as_secs_f64()),
+        }));
+        if allowed {
+            if self.seen.len() >= 4096 { self.seen.clear(); }
+            self.seen.insert(event_id.to_owned());
         }
-        if let Some(last) = self.last_sent.get(session_id) {
-            if now.saturating_duration_since(*last) < self.window {
-                return false;
-            }
-        }
-        // Bound memory on a long-running process.
-        if self.seen.len() >= 4096 {
-            self.seen.clear();
-        }
-        self.last_sent.retain(|_, sent| now.saturating_duration_since(*sent) < self.window);
-        self.seen.insert(event_id.to_owned());
-        self.last_sent.insert(session_id.to_owned(), now);
-        true
+        allowed
+    }
+
+    pub fn reserve_channel(&mut self, channel: PushChannel, must_deliver: bool, queued: Instant) -> Option<Duration> {
+        let now = Instant::now();
+        let timestamp = self.seconds(now);
+        self.core.call::<Option<f64>>(c"push.slot", serde_json::json!({
+            "channel": crate::push_channels::native_name(channel), "mustDeliver": must_deliver,
+            "now": timestamp, "waited": now.saturating_duration_since(queued).as_secs_f64(),
+        })).map(Duration::from_secs_f64)
     }
 
     pub fn has_seen(&self, event_id: &str) -> bool {
@@ -771,6 +781,17 @@ mod tests {
         assert!(gate.should_send_at("e3", "s2", now + Duration::from_secs(4)));
         // Once the window passes the same session may push again.
         assert!(gate.should_send_at("e4", "s1", now + Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn live_gate_shadows_an_error_completion_and_preserves_distinct_approvals() {
+        let mut gate = PushGate::new();
+        assert!(gate.should_send_event("error", "s1", PushKind::Error, false));
+        assert!(!gate.should_send_event("completed", "s1", PushKind::Completion, false));
+        assert!(gate.should_send_event("other-session", "s2", PushKind::Completion, false));
+        assert!(gate.should_send_event("tool-1", "s1", PushKind::Approval, false));
+        assert!(gate.should_send_event("tool-2", "s1", PushKind::Approval, false));
+        assert!(!gate.should_send_event("tool-1", "s1", PushKind::Approval, false));
     }
 
     #[test]

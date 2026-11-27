@@ -11,6 +11,7 @@ private final class DesktopContext {
     var cowork = CoworkAuditState()
     var cursor = CursorHookDeliveryFilter()
     var reconnect = RemoteReconnectPolicy()
+    var pushPolicy = DesktopPushPolicy()
     var failureSounds = SoundDebouncer(window: EventSoundRouting.turnFailureWindow)
 
     func copy() -> DesktopContext {
@@ -22,6 +23,7 @@ private final class DesktopContext {
         result.cowork = cowork
         result.cursor = cursor
         result.reconnect = reconnect
+        result.pushPolicy = pushPolicy
         result.failureSounds = failureSounds
         return result
     }
@@ -94,6 +96,20 @@ private func dispatch(_ op: String, _ data: Data, _ state: DesktopContext?) thro
         let endpoint = PushEndpoint.parse(try decoder.decode(String.self, from: data))
         return try encoder.encode(endpoint.map { [$0.url.absoluteString, $0.authorization] })
     case "push.retry", "push.redirect": return try pushTransportPolicy(op, data)
+    case "push.admit", "push.slot":
+        guard let state else { throw BridgeError.missingContext }
+        return try state.pushPolicy.apply(op, data)
+    case "push.rateLimits":
+        return try encoder.encode(Dictionary(uniqueKeysWithValues: PushChannelKind.allCases.map { kind in
+            (kind.rawValue, kind.rateLimits.map { [$0.count, Int($0.seconds)] })
+        }))
+    case "push.presence":
+        struct Presence: Decodable { let away: Bool; let asleep: Bool; let idle: Double; let threshold: Double }
+        let args = try decoder.decode(Presence.self, from: data)
+        return try encoder.encode(PushPresenceSnapshot(screenLocked: args.away, displaysAsleep: args.asleep,
+            idleSeconds: args.idle).isAway(idleThreshold: args.threshold))
+    case "push.content": return try pushContent(data)
+    case "push.displayWaits": return try displayWaits(data)
     case "renderPush": return try renderPush(data)
     case "acceptPush": return try acceptPush(data)
     case "truncatePushText":

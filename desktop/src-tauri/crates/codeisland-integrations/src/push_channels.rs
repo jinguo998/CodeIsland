@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::push::{PushChannel, PushError, PushRequest};
 
-fn native_name(channel: PushChannel) -> &'static str {
+pub(crate) fn native_name(channel: PushChannel) -> &'static str {
     match channel {
         PushChannel::Lark => "feishu",
         _ => channel.name(),

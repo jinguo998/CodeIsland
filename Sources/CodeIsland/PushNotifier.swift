@@ -333,14 +333,10 @@ final class PushNotifier: ObservableObject {
         }
 
         let now = clock()
-        if !PushThrottle.mustDeliver(kind), globalLimiter.nextSlot(now: now) > now {
-            return skip(.rateLimited, kind, subject)
-        }
-        if let reason = deduplicator.admit(kind: kind, sessionId: subject.sessionId, requestKey: request?.key, now: now) {
+        if let reason = PushThrottle.admit(kind: kind, sessionId: subject.sessionId, requestKey: request?.key,
+                                           now: now, deduplicator: &deduplicator, globalLimiter: &globalLimiter) {
             return skip(reason, kind, subject)
         }
-        // Approvals and questions neither wait for nor use up the global cap.
-        if !PushThrottle.mustDeliver(kind) { globalLimiter.record(now) }
         if let request, let trackingId {
             tracked[trackingId] = TrackedRequest(kind: kind, subject: subject, request: request, heldBack: false)
         }
@@ -532,20 +528,7 @@ final class PushNotifier: ObservableObject {
     }
 
     static func strings(_ l10n: L10n = .shared) -> PushStrings {
-        PushStrings(
-            permission: l10n["push_msg_permission"],
-            question: l10n["push_msg_question"],
-            completion: l10n["push_msg_completion"],
-            error: l10n["push_msg_error"],
-            reminder: l10n["push_msg_reminder"],
-            waitingMinutes: l10n["push_msg_waiting_minutes"],
-            secretQuestion: l10n["push_msg_secret_question"],
-            moreOptions: l10n["push_msg_more_options"],
-            testHeadline: l10n["push_msg_test_headline"],
-            testBody: l10n["push_msg_test_body"],
-            answerIn: l10n["push_msg_answer_in"],
-            answerOnMac: l10n["push_msg_answer_on_mac"]
-        )
+        PushLocalization.strings { l10n[$0] }
     }
 
     /// Clears dedupe state and delivery records between tests.
