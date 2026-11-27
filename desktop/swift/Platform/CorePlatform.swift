@@ -1,5 +1,21 @@
 import Foundation
 
+// The desktop keeps custom agent settings in its JSON store. Scope a snapshot
+// to the current call so independent hooks never share mutable preferences.
+public enum DesktopSourcePreferences {
+    @TaskLocal public static var customCLIs: Data?
+    static let standard = SelfAdapter()
+    struct SelfAdapter {
+        func data(forKey key: String) -> Data? {
+            if key == SessionSnapshot.customCLIConfigsKey, let values = DesktopSourcePreferences.customCLIs { return values }
+            return Foundation.UserDefaults.standard.data(forKey: key)
+        }
+    }
+}
+
+extension SessionSnapshot {
+    typealias UserDefaults = DesktopSourcePreferences
+}
 #if os(Windows)
 public typealias pid_t = Int32
 

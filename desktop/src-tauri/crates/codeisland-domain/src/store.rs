@@ -1251,15 +1251,19 @@ impl SessionStore {
         }).cloned() else {
             return true;
         };
-        let starts_work = matches!(
-            event.event_type,
-            AgentEventType::SessionStart
-                | AgentEventType::UserPrompt
-                | AgentEventType::ToolStart
-                | AgentEventType::SubagentStart
-        ) || event.raw_event_name.as_deref() == Some("PreCompact");
-        if event.timestamp <= removal.at || !(starts_work || event.event_type.is_blocking()) {
-            return false;
+        if event.timestamp <= removal.at { return false; }
+        if !event.event_type.is_blocking() {
+            let synthetic = match event.event_type {
+                AgentEventType::SessionStart => "SessionStart",
+                AgentEventType::UserPrompt => "UserPromptSubmit",
+                AgentEventType::ToolStart => "PreToolUse",
+                AgentEventType::SubagentStart => "SubagentStart",
+                _ => "Event",
+            };
+            let revives: bool = codeisland_swift::call(c"session.revives", serde_json::json!({
+                "event": event.raw_event_name.as_deref().unwrap_or(synthetic), "payload": event.payload,
+            }));
+            if !revives { return false; }
         }
         for id in &removal.members {
             if self.removed_idle.get(id).is_some_and(|group| Arc::ptr_eq(group, &removal)) {

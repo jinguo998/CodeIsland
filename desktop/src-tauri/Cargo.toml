@@ -33,6 +33,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 codeisland-domain = { path = "crates/codeisland-domain" }
+codeisland-swift = { path = "crates/codeisland-swift" }
 codeisland-ipc = { path = "crates/codeisland-ipc" }
 codeisland-runtime = { path = "crates/codeisland-runtime" }
 codeisland-agents = { path = "crates/codeisland-agents" }

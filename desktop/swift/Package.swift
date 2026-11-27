@@ -6,12 +6,17 @@ import PackageDescription
 let package = Package(
     name: "CodeIslandDesktopCore",
     products: [.library(name: "CodeIslandDesktopCore", type: .dynamic, targets: ["CodeIslandDesktopCore"])],
-    dependencies: [.package(url: "https://github.com/apple/swift-crypto.git", exact: "3.15.1")],
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-crypto.git", exact: "3.15.1"),
+        .package(url: "https://github.com/swiftlang/swift-cmark.git", exact: "0.6.0"),
+    ],
     targets: [
         .systemLibrary(name: "SQLite3"),
         .target(name: "CryptoKit", dependencies: [.product(name: "Crypto", package: "swift-crypto")]),
         .target(name: "CodeIslandCore", dependencies: [
             .target(name: "SQLite3", condition: .when(platforms: [.windows, .linux])), .target(name: "CryptoKit", condition: .when(platforms: [.windows, .linux])),
+            .product(name: "cmark-gfm-extensions", package: "swift-cmark", condition: .when(platforms: [.windows, .linux])),
+            .product(name: "cmark-gfm", package: "swift-cmark", condition: .when(platforms: [.windows, .linux])),
         ], linkerSettings: [
             .linkedLibrary("winsqlite3", .when(platforms: [.windows])),
             .linkedLibrary("sqlite3", .when(platforms: [.linux, .macOS])),

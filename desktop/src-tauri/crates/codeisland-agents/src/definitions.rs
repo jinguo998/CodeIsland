@@ -90,7 +90,7 @@ impl ResponseFormat {
 }
 
 /// A single hook event an agent understands.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct HookEventDef {
     pub name: String,
     /// Timeout in milliseconds. Installers convert this to the unit the agent
@@ -173,26 +173,11 @@ struct RawAgent {
     #[serde(default)]
     config: Vec<String>,
     format: String,
-    #[serde(default)]
-    events: Vec<RawEvent>,
     response: String,
     #[serde(default)]
     icon: Option<String>,
     #[serde(default)]
     docs: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawEvent {
-    name: String,
-    #[serde(default = "default_timeout_ms")]
-    timeout_ms: u64,
-    #[serde(default)]
-    blocking: bool,
-}
-
-fn default_timeout_ms() -> u64 {
-    5_000
 }
 
 /// Formats a user-defined CLI can be installed with, mirroring the macOS
@@ -210,79 +195,14 @@ pub fn custom_format_supported(format: HookFormat) -> bool {
 /// The event set installed for a user-defined CLI, matching macOS
 /// `ConfigInstaller.defaultEvents(for:)`.
 fn custom_events(format: HookFormat) -> Vec<HookEventDef> {
-    let table: &[(&str, u64, bool)] = match format {
-        HookFormat::ClaudeJson => &[
-            ("UserPromptSubmit", 5_000, true),
-            ("PreToolUse", 5_000, false),
-            ("PostToolUse", 5_000, true),
-            ("SessionStart", 5_000, false),
-            ("SessionEnd", 5_000, true),
-            ("Stop", 5_000, true),
-            ("SubagentStart", 5_000, true),
-            ("SubagentStop", 5_000, true),
-            ("Notification", 86_400_000, false),
-            ("PreCompact", 5_000, true),
-        ],
-        HookFormat::EventMapJson => &[
-            ("SessionStart", 5_000, false),
-            ("SessionEnd", 5_000, true),
-            ("UserPromptSubmit", 5_000, false),
-            ("PreToolUse", 5_000, false),
-            ("PostToolUse", 5_000, false),
-            ("Stop", 5_000, false),
-        ],
-        HookFormat::CursorJson => &[
-            ("beforeSubmitPrompt", 5_000, false),
-            ("beforeShellExecution", 5_000, false),
-            ("afterShellExecution", 5_000, false),
-            ("beforeReadFile", 5_000, false),
-            ("afterFileEdit", 5_000, false),
-            ("beforeMCPExecution", 5_000, false),
-            ("afterMCPExecution", 5_000, false),
-            ("afterAgentThought", 5_000, false),
-            ("afterAgentResponse", 5_000, false),
-            ("stop", 5_000, false),
-        ],
-        HookFormat::CopilotJson => &[
-            ("sessionStart", 5_000, false),
-            ("sessionEnd", 5_000, true),
-            ("userPromptSubmitted", 5_000, false),
-            ("preToolUse", 5_000, false),
-            ("postToolUse", 5_000, true),
-            ("errorOccurred", 5_000, true),
-        ],
-        _ => &[],
+    let name = match format {
+        HookFormat::ClaudeJson => "claude",
+        HookFormat::EventMapJson => "nested",
+        HookFormat::CursorJson => "flat",
+        HookFormat::CopilotJson => "copilot",
+        _ => return vec![],
     };
-    table
-        .iter()
-        .map(|(name, timeout_ms, blocking)| HookEventDef {
-            name: (*name).to_owned(),
-            timeout_ms: *timeout_ms,
-            blocking: *blocking,
-        })
-        .collect()
-}
-
-impl RawEvent {
-    fn into_def(self) -> HookEventDef {
-        let name = self.name;
-        // Permission gates block the agent's tool call. Treat the common
-        // spellings as blocking even when the table omits the flag.
-        let blocking = self.blocking
-            || matches!(
-                name.as_str(),
-                "PermissionRequest"
-                    | "permission_request"
-                    | "BeforeTool"
-                    | "beforeShellExecution"
-                    | "beforeMCPExecution"
-            );
-        HookEventDef {
-            name,
-            timeout_ms: self.timeout_ms,
-            blocking,
-        }
-    }
+    codeisland_swift::call(c"install.defaults", name)
 }
 
 /// All built-in definitions, loaded once from `definitions/agents.toml`.
@@ -295,6 +215,8 @@ fn load_definitions() -> Vec<AgentDefinition> {
     let raw: DefinitionsFile = toml::from_str(include_str!("../definitions/agents.toml"))
         .expect("definitions/agents.toml must be valid TOML");
 
+    let mut catalog: std::collections::HashMap<String, Vec<HookEventDef>> =
+        codeisland_swift::call(c"install.events", ());
     let mut out = Vec::with_capacity(raw.agents.len());
     for item in raw.agents {
         let agent = kind_for_source(&item.id);
@@ -304,7 +226,8 @@ fn load_definitions() -> Vec<AgentDefinition> {
         }
         let format = HookFormat::parse(&item.format).unwrap_or(HookFormat::Manual);
         let response = ResponseFormat::parse(&item.response).unwrap_or(ResponseFormat::Plain);
-        let events = item.events.into_iter().map(RawEvent::into_def).collect();
+        let key = match item.source.as_str() { "qodercn" => "qoder-cn", "deepseek" => "dsh", name => name };
+        let events = catalog.remove(key).unwrap_or_default();
         out.push(AgentDefinition {
             agent,
             display_name: item.display,
@@ -458,18 +381,15 @@ fn without_marker(source: &str) -> &str {
 /// wire spellings used by the hook `--source` flag and by older macOS builds.
 pub fn kind_for_source(source: &str) -> AgentKind {
     let source = without_marker(source.trim());
+    // This desktop enum has separate configuration entries for Qoder CN and Next.
     match source.to_ascii_lowercase().as_str() {
-        "claude-code" | "claude_code" => AgentKind::Claude,
-        "qoder-cli" | "qoder_cli" => AgentKind::Qoder,
-        "qoder-cn" | "qoder_cn" => AgentKind::QoderCn,
-        "trae-cli-next" | "traecli-next" => AgentKind::TraeCli,
-        "google-antigravity" | "agy" => AgentKind::Antigravity,
-        "omp" | "oh-my-pi" => AgentKind::Pi,
-        "dsh" => AgentKind::DeepSeek,
-        "factory" => AgentKind::Factory,
-        "aiwork-cli" => AgentKind::AiWork,
-        other => AgentKind::from_tag(other),
+        "qoder-cn" | "qoder_cn" | "qodercn" => return AgentKind::QoderCn,
+        "qoder_cli" => return AgentKind::Qoder,
+        "trae-cli-next" | "traecli-next" => return AgentKind::TraeCli,
+        _ => {}
     }
+    let canonical: Option<String> = codeisland_swift::call(c"hook.source", serde_json::json!({"source": source}));
+    AgentKind::from_tag(canonical.as_deref().unwrap_or(source))
 }
 
 #[cfg(test)]

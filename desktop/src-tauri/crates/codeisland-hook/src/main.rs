@@ -97,27 +97,21 @@ fn run_send(args: &[String]) -> i32 {
     };
     if admission.immediate.is_none() && let Some(text) = hook.immediate.as_deref() { emit(text); }
     let fallback = if hook.immediate.is_some() || hook.cursor { "" } else { fallback };
-    let mut event = hook.event;
-    event.wezterm_pane = event.wezterm_pane.or_else(|| env_value("WEZTERM_PANE")?.parse().ok());
-    if event.wezterm_pane.is_some() {
-        event.terminal_kind = Some("WezTerm".to_owned());
-    } else if event.terminal_kind.is_none() {
-        event.terminal_kind = if env_value("WT_SESSION").is_some() {
-            Some("Windows Terminal".to_owned())
-        } else {
-            env_value("TERM_PROGRAM")
-        };
+    let mut payload = hook.payload;
+    if let Some(object) = payload.as_object_mut() {
+        if let Some(pane) = env_value("WEZTERM_PANE") {
+            object.entry("_wezterm_pane").or_insert_with(|| pane.into());
+            object.entry("terminal_kind").or_insert_with(|| "WezTerm".into());
+        } else if let Some(terminal) = env_value("WT_SESSION").map(|_| "Windows Terminal".to_owned())
+            .or_else(|| env_value("TERM_PROGRAM")) {
+            object.entry("terminal_kind").or_insert_with(|| terminal.into());
+        }
+        object.entry("_source").or_insert_with(|| hook.source.clone().into());
     }
-
-    let waits = event.waits;
-    if !hook.delay.is_zero() { std::thread::sleep(hook.delay); }
-    let message = ClientMessage::Event {
-        v: PROTOCOL_VERSION,
-        id: uuid::Uuid::new_v4().to_string(),
-        source: event.payload.as_ref().and_then(|p| p["_source"].as_str()).unwrap_or(&options.source).to_owned(),
-        event,
-        waits,
-        timeout_ms: options.timeout_ms,
+    let waits = hook.waits;
+    if hook.delay > 0.0 { std::thread::sleep(Duration::from_secs_f64(hook.delay)); }
+    let message = ClientMessage::Hook {
+        v: PROTOCOL_VERSION, id: uuid::Uuid::new_v4().to_string(), payload, timeout_ms: options.timeout_ms,
     };
 
     let connect_timeout = Duration::from_millis(options.connect_timeout_ms);
@@ -133,7 +127,7 @@ fn run_send(args: &[String]) -> i32 {
             .saturating_add(READ_TIMEOUT_GRACE_MS),
     );
 
-    match client::send(&message, connect_timeout, read_timeout) {
+    match send_hook(message, connect_timeout, read_timeout) {
         Ok(ServerMessage::Decision {
             stdout, exit_code, ..
         }) => {
@@ -155,6 +149,22 @@ fn run_send(args: &[String]) -> i32 {
             0
         }
     }
+}
+
+/// A v1 server rejects an unknown message kind before dispatch. Only that
+/// explicit rejection can be retried without delivering a live approval twice.
+fn send_hook(message: ClientMessage, connect: Duration, read: Duration) -> std::io::Result<ServerMessage> {
+    let response = client::send(&message, connect, read)?;
+    if !matches!(&response, ServerMessage::Error { id, error, .. }
+        if id.is_empty() && error.starts_with("invalid message: unknown variant `hook`")) {
+        return Ok(response);
+    }
+    let ClientMessage::Hook { v, id, payload, timeout_ms } = message else { return Ok(response) };
+    let source = payload["_source"].as_str().unwrap_or("claude").to_owned();
+    let name = payload["hook_event_name"].as_str().unwrap_or("").to_owned();
+    let event = codeisland_agents::normalize::project_wire(&source, &name, payload);
+    let waits = event.waits;
+    client::send(&ClientMessage::Event { v, id, source, event, waits, timeout_ms }, connect, read)
 }
 
 /// Reply printed when there is no decision. Claude, Codex, Gemini and Cursor
@@ -443,10 +453,10 @@ mod tests {
     fn swift_prepares_local_hooks_with_their_original_input_and_parent() {
         use codeisland_agents::normalize::prepare_local_hook;
         let hook = prepare_local_hook("claude", "SessionStart", r#"{"session_id":"s","_ppid":7}"#, None, 99).unwrap().unwrap();
-        assert_eq!(hook.event.session_id, "s");
-        assert_eq!(hook.event.payload.unwrap()["_ppid"], 7);
+        assert_eq!(hook.payload["session_id"], "s");
+        assert_eq!(hook.payload["_ppid"], 7);
         let empty = prepare_local_hook("claude", "SessionStart", "", None, 5).unwrap().unwrap();
-        assert_eq!(empty.event.session_id, "claude-ppid-5");
+        assert_eq!(empty.payload["session_id"], "claude-ppid-5");
         assert!(prepare_local_hook("claude", "SessionStart", "not json", None, 5).is_err());
     }
 

@@ -3,7 +3,6 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use chrono::{SecondsFormat, Utc};
 use codeisland_domain::{AgentEvent, AppSettings};
 use serde_json::{Value, json};
 
@@ -37,57 +36,11 @@ pub fn forward(settings: &AppSettings, source: &str, event: &AgentEvent) {
 }
 
 fn envelope(filter: &str, source: &str, event: &AgentEvent) -> Option<Value> {
-    let raw_event = event.raw_event_name.as_deref()?;
-    let normalized = normalize_hook_name(raw_event);
-    if !filter.trim().is_empty()
-        && !filter
-            .split(',')
-            .map(str::trim)
-            .any(|name| name == normalized || name == raw_event)
-    {
-        return None;
-    }
-    let raw = event.payload.as_ref().cloned().unwrap_or_else(|| json!({}));
-    let source = source.strip_prefix("codeisland-").unwrap_or(source);
-    Some(json!({
-        "event": normalized,
-        "raw_event": raw_event,
-        "session_id": event.session_id,
-        "source": source,
-        "cwd": event.cwd.as_deref().unwrap_or_default(),
-        "tool_name": event.tool.as_deref().unwrap_or_default(),
-        "timestamp": Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
-        "raw": raw,
+    codeisland_swift::call(c"hook.webhook", json!({
+        "filter": filter, "event": event.raw_event_name.as_deref()?, "card": event.session_id,
+        "source": source.trim_start_matches("codeisland-"), "cwd": event.cwd,
+        "tool": event.tool, "payload": event.payload,
     }))
-}
-
-/// Keep raw-event filters compatible with CodeIslandCore's EventNormalizer.
-fn normalize_hook_name(name: &str) -> &str {
-    match name {
-        "beforeSubmitPrompt" | "userPromptSubmitted" | "userPromptSubmit"
-        | "user_prompt_submit" | "pre_llm_call" | "TaskResume" => "UserPromptSubmit",
-        "beforeShellExecution" | "beforeReadFile" | "beforeMCPExecution" | "preToolUse"
-        | "pre_tool_use" | "pre_tool_call" => "PreToolUse",
-        "afterShellExecution" | "afterFileEdit" | "afterMCPExecution" | "AfterTool"
-        | "postToolUse" | "post_tool_use" | "post_tool_call" => "PostToolUse",
-        "afterAgentThought" | "errorOccurred" | "notification" => "Notification",
-        "afterAgentResponse" => "AfterAgentResponse",
-        "stop" | "stop_failure" | "StopFailure" | "on_session_end" => "Stop",
-        "BeforeTool" | "permission_request" => "PermissionRequest",
-        "BeforeAgent" | "subagent_start" => "SubagentStart",
-        "AfterAgent" | "subagent_stop" => "SubagentStop",
-        "sessionStart" | "agentSpawn" | "session_start" | "on_session_start" | "TaskStart" => {
-            "SessionStart"
-        }
-        "sessionEnd" | "session_end" | "on_session_finalize" | "on_session_reset" => "SessionEnd",
-        "post_tool_use_failure" => "PostToolUseFailure",
-        "permission_denied" => "PermissionDenied",
-        "pre_compact" => "PreCompact",
-        "post_compact" => "PostCompact",
-        "post_llm_call" => "AgentTurnSettled",
-        "TaskComplete" | "TaskCancel" => "TaskRoundComplete",
-        _ => name,
-    }
 }
 
 #[cfg(test)]

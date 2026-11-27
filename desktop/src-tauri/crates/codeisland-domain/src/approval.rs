@@ -15,7 +15,9 @@ pub enum ApprovalAlwaysScope {
 /// These hooks apply the supplied rule themselves. An exception they still
 /// forward after that (such as a protected path) needs a fresh decision.
 pub fn agent_keeps_always_rule(agent: AgentKind) -> bool {
-    matches!(agent, AgentKind::Claude | AgentKind::Qoder | AgentKind::QoderCn | AgentKind::MiniMax)
+    codeisland_swift::call(c"hook.keepsRule", serde_json::json!({
+        "event": "PermissionRequest", "source": agent.hook_source(),
+    }))
 }
 
 pub fn command_for_event(event: &AgentEvent) -> Option<&str> {

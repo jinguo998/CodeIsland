@@ -101,7 +101,7 @@ fn build(app: &AppHandle, state: &AppState) -> Value {
 
     redact_push_settings(&mut document["settings"]);
     redact_value(&mut document);
-    document
+    codeisland_swift::call(c"desktop.diagnostics", document)
 }
 
 fn redact_push_settings(settings: &mut Value) {

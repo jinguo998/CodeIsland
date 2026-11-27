@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use codeisland_domain::AgentKind;
 use serde_json::{Map, Value, json};
-use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
+use toml_edit::{ArrayOfTables, DocumentMut, Item, Table};
 
 use crate::AgentError;
 use crate::definitions::{
@@ -348,40 +348,20 @@ fn make_hook_entry(
     command: String,
 ) -> Value {
     match style {
-        HookJsonStyle::Claude => json!({
-            "matcher": "*",
-            "hooks": [{
-                "type": "command",
-                "command": command,
-                // Qwen Code declares milliseconds in its Claude-shaped file;
-                // every other Claude fork uses seconds.
-                "timeout": timeout_value(def, event)
-            }]
-        }),
-        HookJsonStyle::EventMap => json!({
-            // Codex/Gemini reject a matcher on nested entries.
-            "hooks": [{
-                "type": "command",
-                "command": command,
-                "timeout": timeout_value(def, event)
-            }]
-        }),
-        HookJsonStyle::Generic => json!({
-            "matcher": "",
-            "hooks": [{
-                "type": "command",
-                "command": command,
-                "timeout": timeout_value(def, event)
-            }]
-        }),
-        HookJsonStyle::MiniMax => json!({
-            "hooks": [{
-                "type": "command",
-                "command": command,
-                "timeout": timeout_secs(event)
-            }]
-        }),
+        HookJsonStyle::Claude => native_entry("claude", def, event, command),
+        HookJsonStyle::EventMap => native_entry("nested", def, event, command),
+        HookJsonStyle::Generic => json!({ "matcher": "", "hooks": [
+            { "type": "command", "command": command, "timeout": timeout_value(def, event) }] }),
+        HookJsonStyle::MiniMax => json!({ "hooks": [
+            { "type": "command", "command": command, "timeout": timeout_secs(event) }] }),
     }
+}
+
+fn native_entry(format: &str, def: &AgentDefinition, event: &HookEventDef, command: String) -> Value {
+    codeisland_swift::call(c"install.entry", json!({
+        "format": format, "source": def.source, "event": event.name,
+        "timeout": timeout_value(def, event), "command": command,
+    }))
 }
 
 // ── Cursor ──────────────────────────────────────────────────────────────────
@@ -428,10 +408,7 @@ pub fn merge_cursor_json(
             .ok_or_else(|| AgentError::Config(format!("{key} is not an object")))?;
         clean_hooks_map(hooks, def, false);
         for event in &def.events {
-            let entry = json!({
-                "command": command_for(&event.name),
-                "timeout": timeout_secs(event)
-            });
+            let entry = native_entry("flat", def, event, command_for(&event.name));
             hooks
                 .entry(event.name.clone())
                 .or_insert_with(|| Value::Array(Vec::new()))
@@ -508,11 +485,7 @@ pub fn merge_copilot_json(
             .ok_or_else(|| AgentError::Config(format!("{key} is not an object")))?;
         clean_hooks_map(hooks, def, false);
         for event in &def.events {
-            let entry = json!({
-                "type": "command",
-                "bash": command_for(&event.name),
-                "timeoutSec": timeout_secs(event)
-            });
+            let entry = native_entry("copilot", def, event, command_for(&event.name));
             hooks
                 .entry(event.name.clone())
                 .or_insert_with(|| Value::Array(Vec::new()))
@@ -618,14 +591,9 @@ fn merge_zcode_json(
             .ok_or_else(|| AgentError::Config("hooks.events is not an object".to_owned()))?;
         clean_hooks_map(events, def, false);
         for event in &def.events {
-            let mut hook = Map::new();
-            hook.insert("type".to_owned(), json!("command"));
-            hook.insert("command".to_owned(), json!(command_for(&event.name)));
-            // ZCode's per-hook default is 60s. Only write a timeout when the
-            // event needs longer (the blocking approval).
-            if timeout_secs(event) > 60 {
-                hook.insert("timeout".to_owned(), json!(timeout_secs(event)));
-            }
+            let entry: Value = codeisland_swift::call(c"install.zcodeEntry", json!({
+                "command": command_for(&event.name), "timeout": timeout_secs(event),
+            }));
             events
                 .entry(event.name.clone())
                 .or_insert_with(|| Value::Array(Vec::new()))
@@ -633,7 +601,7 @@ fn merge_zcode_json(
                 .ok_or_else(|| {
                     AgentError::Config(format!("hooks.events.{} is not an array", event.name))
                 })?
-                .push(json!({ "hooks": [Value::Object(hook)] }));
+                .push(entry);
         }
     }
     to_json_text(&Value::Object(root))
@@ -668,24 +636,7 @@ fn merge_antigravity_json(
             .ok_or_else(|| AgentError::Config("codeisland is not an object".to_owned()))?;
         clean_hooks_map(wrapper, def, false);
         for event in &def.events {
-            // Antigravity tool events take `{matcher, hooks:[…]}`; model
-            // events (Stop) take a flat `{type, command}` handler.
-            let entry = if matches!(event.name.as_str(), "PreToolUse" | "PostToolUse") {
-                json!({
-                    "matcher": "*",
-                    "hooks": [{
-                        "type": "command",
-                        "command": command_for(&event.name),
-                        "timeout": timeout_secs(event)
-                    }]
-                })
-            } else {
-                json!({
-                    "type": "command",
-                    "command": command_for(&event.name),
-                    "timeout": timeout_secs(event)
-                })
-            };
+            let entry = native_entry("antigravityNamed", def, event, command_for(&event.name));
             wrapper
                 .entry(event.name.clone())
                 .or_insert_with(|| Value::Array(Vec::new()))
@@ -727,11 +678,7 @@ fn merge_kiro_json(
             .ok_or_else(|| AgentError::Config("hooks is not an object".to_owned()))?;
         clean_hooks_map(hooks, def, false);
         for event in &def.events {
-            let entry = json!({
-                "command": command_for(&event.name),
-                "matcher": "*",
-                "timeout_ms": event.timeout_ms
-            });
+            let entry = native_entry("kiroAgent", def, event, command_for(&event.name));
             hooks
                 .entry(event.name.clone())
                 .or_insert_with(|| Value::Array(Vec::new()))
@@ -773,15 +720,7 @@ fn merge_trae_json(
             .ok_or_else(|| AgentError::Config("hooks is not an object".to_owned()))?;
         clean_hooks_map(hooks, def, false);
         for event in &def.events {
-            let entry = json!({
-                "matcher": "*",
-                "loop_limit": 5,
-                "hooks": [{
-                    "type": "command",
-                    "command": command_for(&event.name),
-                    "timeout": timeout_secs(event)
-                }]
-            });
+            let entry = native_entry("traeIDE", def, event, command_for(&event.name));
             hooks
                 .entry(event.name.clone())
                 .or_insert_with(|| Value::Array(Vec::new()))
@@ -847,37 +786,40 @@ fn merge_opencode_config(
     existing: &str,
     plugin_path: &Path,
 ) -> Result<String, AgentError> {
-    let mut root = parse_object(existing)?;
-    let reference = file_url(plugin_path);
-    let plugins = root
-        .entry("plugin")
-        .or_insert_with(|| Value::Array(Vec::new()));
-    let plugins = plugins
-        .as_array_mut()
-        .ok_or_else(|| AgentError::Config("plugin is not an array".to_owned()))?;
-    plugins.retain(|entry| {
-        !entry
-            .as_str()
-            .is_some_and(|text| text.contains("codeisland"))
-    });
-    plugins.push(json!(reference));
-    to_json_text(&Value::Object(root))
+    edit_opencode_config(existing, Some(file_url(plugin_path)))
 }
 
 fn remove_opencode_config(existing: &str) -> Result<String, AgentError> {
+    edit_opencode_config(existing, None)
+}
+
+fn edit_opencode_config(existing: &str, reference: Option<String>) -> Result<String, AgentError> {
     let mut root = parse_object(existing)?;
-    if let Some(plugins) = root.get_mut("plugin").and_then(|value| value.as_array_mut()) {
-        plugins.retain(|entry| {
-            !entry
-                .as_str()
-                .is_some_and(|text| text.contains("codeisland"))
-        });
-        let empty = plugins.is_empty();
-        if empty {
-            root.remove("plugin");
+    // An OpenCode reference can also be [plugin, options]. The native string-array
+    // editor predates these entries. Keep the opaque entries in their original slots.
+    let mut opaque = Vec::new();
+    if let Some(value) = root.get_mut("plugin") {
+        let plugins = value.as_array_mut().ok_or_else(|| AgentError::Config("plugin is not an array".into()))?;
+        let prefix = format!("__{}_", uuid::Uuid::new_v4());
+        for entry in plugins.iter_mut().filter(|entry| !entry.is_string()) {
+            let key = format!("{prefix}{}", opaque.len());
+            opaque.push((key.clone(), std::mem::replace(entry, json!(key))));
         }
     }
-    to_json_text(&Value::Object(root))
+    let source = if opaque.is_empty() { existing.to_owned() } else { to_json_text(&Value::Object(root))? };
+    let merged: String = codeisland_swift::call::<Option<String>>(c"install.opencode", json!({
+        "original": source, "reference": reference,
+    })).ok_or_else(|| AgentError::Config("cannot edit the OpenCode configuration".into()))?;
+    if opaque.is_empty() { return Ok(merged); }
+    let mut result = parse_object(&merged)?;
+    if let Some(plugins) = result.get_mut("plugin").and_then(Value::as_array_mut) {
+        for entry in plugins {
+            if let Some(index) = opaque.iter().position(|(key, _)| entry.as_str() == Some(key.as_str())) {
+                *entry = opaque.swap_remove(index).1;
+            }
+        }
+    }
+    to_json_text(&Value::Object(result))
 }
 
 // ── MiniMax plugin manifest ─────────────────────────────────────────────────
@@ -908,13 +850,7 @@ fn write_minimax_manifest(
             return Ok(());
         }
     }
-    let document = json!({
-        "name": "codeisland",
-        "displayName": "CodeIsland",
-        "version": "1.0.0",
-        "description": MINIMAX_MANIFEST_MARKER,
-        "hooks": ["hooks/hooks.json"]
-    });
+    let document: Value = codeisland_swift::call(c"install.minimaxManifest", ());
     let text = to_json_text(&document)?;
     write_if_changed(paths, def.agent, &manifest, &text)?;
     Ok(())
@@ -963,27 +899,12 @@ fn install_openclaw_pack(
     let Some(plugin_dir) = index_path.parent() else {
         return Ok(());
     };
-    let manifest = json!({
-        "id": "codeisland",
-        "name": "CodeIsland",
-        "description": OPENCLAW_PACK_MARKER,
-        "version": "1.0.0",
-        "configSchema": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {}
-        },
-        "activation": { "onStartup": true }
-    });
-    let package = json!({
-        "name": "codeisland",
-        "version": "1.0.0",
-        "description": OPENCLAW_PACK_MARKER,
-        "private": true,
-        "type": "module",
-        "openclaw": { "extensions": ["./index.ts"] }
-    });
-    for (name, document) in [("openclaw.plugin.json", manifest), ("package.json", package)] {
+    for (name, resource) in [
+        ("openclaw.plugin.json", include_str!("../../../../../Sources/CodeIsland/Resources/codeisland-openclaw/openclaw.plugin.json")),
+        ("package.json", include_str!("../../../../../Sources/CodeIsland/Resources/codeisland-openclaw/package.json")),
+    ] {
+        let mut document: Value = serde_json::from_str(resource)?;
+        document["description"] = json!(OPENCLAW_PACK_MARKER);
         let path = plugin_dir.join(name);
         if let Some(existing) = read_to_string_opt(&path)? {
             if !existing.trim().is_empty() && !existing.contains(OPENCLAW_PACK_MARKER) {
@@ -1192,17 +1113,16 @@ pub fn merge_kimi_toml(
         }
     }
     for event in &def.events {
-        let mut table = Table::new();
-        table.insert("event", value(event.name.clone()));
-        table.insert("command", value(command_for(&event.name)));
-        table.insert("timeout", value(timeout_secs(event) as i64));
-        if matches!(
-            event.name.as_str(),
-            "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
-        ) {
-            table.insert("matcher", value(".*"));
-        }
-        tables.push(table);
+        // The native block places its command in a TOML basic string. Escape
+        // quotes, backslashes and controls in the resolved Windows command.
+        let quoted = serde_json::to_string(&command_for(&event.name))?;
+        let block: String = codeisland_swift::call(c"install.kimiBlock", json!({
+            "event": event.name, "timeout": timeout_secs(event), "command": &quoted[1..quoted.len()-1],
+        }));
+        let native: DocumentMut = block.parse().map_err(|e: toml_edit::TomlError| AgentError::Config(e.to_string()))?;
+        let table = native["hooks"].as_array_of_tables().and_then(|items| items.get(0))
+            .ok_or_else(|| AgentError::Config("invalid Kimi hook table".into()))?;
+        tables.push(table.clone());
     }
     doc.insert("hooks", Item::ArrayOfTables(tables));
     Ok(ensure_newline(doc.to_string()))
@@ -1792,8 +1712,10 @@ fn parse_object(existing: &str) -> Result<Map<String, Value>, AgentError> {
     if existing.trim().is_empty() {
         return Ok(Map::new());
     }
-    let value: Value = serde_json::from_str(existing)
-        .map_err(|error| AgentError::Config(format!("invalid JSON: {error}")))?;
+    let value: Value = serde_json::from_str(existing).or_else(|_| {
+        let stripped: String = codeisland_swift::call(c"install.stripComments", existing);
+        serde_json::from_str(&stripped)
+    }).map_err(|error| AgentError::Config(format!("invalid JSON: {error}")))?;
     value
         .as_object()
         .cloned()
@@ -1900,13 +1822,24 @@ fn write_if_changed(
 ) -> Result<bool, AgentError> {
     let path = &crate::paths::resolve_write_path(path);
     let existing = read_to_string_opt(path)?;
-    if existing.as_deref() == Some(new_text) {
-        return Ok(false);
+    let mut new_text = new_text.to_owned();
+    if let Some(original) = existing.as_deref() {
+        if original == new_text { return Ok(false); }
+        if !original.trim().is_empty() && path.extension().is_some_and(|ext| ext == "json" || ext == "jsonc") {
+            let before = parse_object(original)?;
+            let after = parse_object(&new_text)?;
+            let remove: Vec<_> = before.keys().filter(|key| !after.contains_key(*key)).collect();
+            let set: Map<_, _> = after.into_iter().filter(|(key, value)| before.get(key) != Some(value)).collect();
+            if remove.is_empty() && set.is_empty() { return Ok(false); }
+            new_text = codeisland_swift::call::<Option<String>>(c"install.jsonEdit", json!({
+                "original": original, "remove": remove, "set": set,
+            })).ok_or_else(|| AgentError::Config(format!("cannot edit {} as a JSON object", path.display())))?;
+        }
     }
     if existing.is_some() {
         backup(paths, agent, path)?;
     }
-    write_atomic(path, new_text)?;
+    write_atomic(path, &new_text)?;
     Ok(true)
 }
 

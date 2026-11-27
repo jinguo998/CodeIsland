@@ -923,6 +923,7 @@ dependencies = [
  "codeisland-integrations",
  "codeisland-ipc",
  "codeisland-runtime",
+ "codeisland-swift",
  "serde",
  "serde_json",
  "tauri",
