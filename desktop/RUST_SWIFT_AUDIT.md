@@ -6,6 +6,38 @@
 - `swift_sources.py` 仍会将部分函数和语句复制到构建目录的 `Selected*.swift`。其中包括 `HookServer.intake`、`AppState` 的审批和问题回包、`ConfigInstaller` 的安装规则、`RemoteInstaller` 的脚本文本，以及 `JSONLTailer` 的记录解析。下表提到这些符号时，只表示已经找到对应关系。要移除这批副本，还需要为原文件依赖的 macOS 接口或私有状态提供可用入口。[剩余生成规则](scripts/swift_sources.py)
 - OpenCode、Pi、OMP 和 OpenClaw 的插件另有 JavaScript/TypeScript 生成步骤。它会读取插件源码并生成 Windows 版本。[插件构建脚本](scripts/plugin_sources.py)
 
+## 从 protocol.rs 到原版入口
+
+`protocol.rs` 定义 Windows 命名管道的请求 ID、超时、应答关联和旧版 `Event` 帧。对于新版 `Hook` 帧，`ipc_handler.rs` 将原始 JSON 传给 `hook.receive`。这里调用的 `HookServer.intake` 仍来自生成文件。发送端的 `HookIntake`、Gemini 的 `stdout(forAnswer:)` 和会话更新所用的 `SessionSnapshot` 已经直接编译原文件。[协议帧](src-tauri/crates/codeisland-ipc/src/protocol.rs) · [接收端](src-tauri/crates/codeisland-runtime/src/ipc_handler.rs) · [Swift 接口](swift/Sources/HookServerAdapter.swift)
+
+可在仓库根目录用下面的命令验证其中一个文件。最后一条比较文件系统标识。即使两个文件的内容相同，副本也会返回 `False`。
+
+```sh
+python desktop/scripts/build-swift.py test --scratch .build/direct-audit
+python -c "from pathlib import Path; print(Path('.build/direct-audit/package/Targets/CodeIslandCore/Original/HookIntake.swift').samefile('Sources/CodeIslandCore/HookIntake.swift'))"
+```
+
+## 仍在复制的 Swift 源码
+
+下表覆盖 `swift_sources.py` 生成的全部 23 个产品源码文件。第一列是 `Selected*.swift` 文件名的中间部分，最后一列给出当前构建不能直接调用相应实现的具体原因。
+
+| 生成文件 | 所需实现 | 直接引用原文件的阻塞 |
+| --- | --- | --- |
+| `HookServer`、`Webhook` | 事件分流、cwd 过滤、自动审批、Webhook 正文 | `HookServer` 持有 `AppState` 和 Unix socket 监听器。Webhook 正文在私有 `forwardEventToWebhook` 里生成，随后直接发送。自动审批来源解析在 macOS 设置的 getter 内。[HookServer](../Sources/CodeIsland/HookServer.swift) · [Settings](../Sources/CodeIsland/Settings.swift) |
+| `HookAnswers`、`PermissionCalls` | 审批、问答、跳过和工具完成时的等待队列判断 | 回包构造位于 `AppState` 的实例方法中，随后会恢复原应用保存的 continuation。工具调用缓存则读写同一状态对象。Windows 有自己的请求和等待队列。[AppState](../Sources/CodeIsland/AppState.swift) · [工具调用缓存](../Sources/CodeIsland/AppState+ToolUseCache.swift) |
+| `DesktopAppRouting`、`CodexMessages` | 只读等待、Codex 深链、线程状态与用户输入 | 这些方法分布在 `AppState` 扩展、界面模型和 `TerminalActivator` 中。线程处理依赖应用状态和 SwiftUI，终端激活依赖 AppKit 与 ApplicationServices。[Codex 扩展](../Sources/CodeIsland/AppState+CodexAppServer.swift) · [等待状态](../Sources/CodeIsland/AppState+DisplayOnlyWaits.swift) · [终端激活](../Sources/CodeIsland/TerminalActivator.swift) |
+| `CardShortcut`、`CardOrdering`、`ApprovalAlwaysScope` | 卡片快捷键、排序、永久允许的作用域 | 快捷键操作会执行 SwiftUI 动画并修改卡片状态。排序与行视图度量在同一文件，作用域枚举直接声明在面板视图文件中。[快捷键](../Sources/CodeIsland/AppState+CardShortcuts.swift) · [排序](../Sources/CodeIsland/SessionListOrdering.swift) · [面板](../Sources/CodeIsland/NotchPanelView.swift) |
+| `TrayDrawing`、`SoundTiming`、`PushStrings` | 托盘图形、静音时间和推送文案 | 绘制命令嵌在 AppKit 的图标回调里，声音管理器持有 `NSSound`，推送和本地化类引用 CoreGraphics 与 Combine。[托盘](../Sources/CodeIsland/StatusItemController.swift) · [声音](../Sources/CodeIsland/SoundManager.swift) · [推送](../Sources/CodeIsland/PushNotifier.swift) · [本地化](../Sources/CodeIsland/L10n.swift) |
+| `InstallerCatalog`、`RemoteInstaller` | CLI 默认事件、安装条目、远程安装脚本 | 条目构造嵌在原安装器的配置读写方法中。远程 Python 函数位于 Swift 多行字符串内，完整入口还会加载应用资源并调用固定路径 `/usr/bin/ssh`。[本地安装器](../Sources/CodeIsland/ConfigInstaller.swift) · [远程安装器](../Sources/CodeIsland/RemoteInstaller.swift) |
+| `ClaudeRecords`、`CodexRollout` | 会话记录、rollout 文件头及最近回合状态 | 同文件的会话发现流程调用 `ProcessTable`，依赖 macOS 的 libproc 和 sysctl。Windows 还需要通过自己的增量读取器处理未写完的最后一行。[Claude 发现](../Sources/CodeIsland/Discovery/ClaudeDiscovery.swift) · [Codex 发现](../Sources/CodeIsland/Discovery/CodexDiscovery.swift) · [进程表](../Sources/CodeIsland/ProcessTable.swift) |
+| `CompanionState`、`CompanionFrames` | 伴侣设备的会话摘要和蓝牙分帧 | 摘要读取 `AppState` 的卡片和问题队列。分帧方法是 CoreBluetooth 外设类型的私有成员，Windows 的最大帧长由 WinRT 订阅者提供。[状态发布](../Sources/CodeIsland/ESP32StatePublisher.swift) · [蓝牙外设](../Sources/CodeIsland/AppleCompanionBluetoothPeripheral.swift) |
+| `DiagnosticText` | 诊断信息脱敏 | 同文件的配置读取使用 `JSONSerialization.ReadingOptions.json5Allowed`。桌面 Swift 工具链缺少这个 Foundation 接口。[DiagnosticsRedaction](../Sources/CodeIsland/DiagnosticsRedaction.swift) |
+| `JSONLTailer` | 日志记录与增量解析 | 原文件使用 Darwin 文件描述符和 `DispatchSource.makeFileSystemObjectSource` 监视文件。Windows 还接收已经解码的记录，而原解析函数的相应步骤是私有的。[JSONLTailer](../Sources/CodeIslandCore/JSONLTailer.swift) |
+| `AiWorkStatusMapper` | Agentix 状态映射 | 映射器与 Unix socket 客户端在同一文件，连接和读写使用 `Darwin.connect/send/recv` 及 `SO_NOSIGPIPE`。[AiWorkWatchClient](../Sources/CodeIslandCore/AiWorkWatchClient.swift) |
+| `ClaudeQuotaClient`、`PushTransport` | 配额请求、推送重试和重定向规则 | 原配额入口先访问 macOS Keychain，并使用 POSIX 信号管理子进程。推送传输设置 `waitsForConnectivity`，还需要保留请求级重定向代理的行为。[配额](../Sources/CodeIslandCore/ClaudeQuotaClient.swift) · [推送传输](../Sources/CodeIslandCore/PushTransport.swift) |
+
+测试另有 3 个生成文件。`ClaudeQuotaTests` 的后两项需要 POSIX 子进程，`JSONLTailerTests` 的附加文件监视用例需要原版 watcher，`BridgeGoldenHarness` 的完整运行器需要原版桥接可执行文件、进程树和 Unix socket。三者的源码片段仍由同一个脚本生成。[测试生成规则](scripts/swift_sources.py)
+
 ## codeisland-ipc
 
 | 文件 | 共用的实现与 Windows 职责 |
