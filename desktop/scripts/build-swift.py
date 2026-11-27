@@ -177,11 +177,13 @@ def main():
         base += ["--jobs", jobs]
     if args.action == "test":
         if os.name == "nt":
-            # The upstream lifecycle fixture launches /bin/sh. SwiftPM's serial
-            # --skip runner puts every remaining test in one Windows command line.
-            # One worker keeps tests sequential and launches each by its own name.
+            # The upstream lifecycle fixture launches /bin/sh. The raw Cursor
+            # fixture assumes a POSIX root; DesktopCursorPathTests exercises the
+            # Windows production entry point for drive and UNC paths instead.
+            # One worker avoids putting all remaining names on one command line.
             base += ["--parallel", "--num-workers", "1",
-                     "--skip", "CodexAppServerClientTests/testProcessExitDisarmsReadabilityHandlers$"]
+                     "--skip", "CodexAppServerClientTests/testProcessExitDisarmsReadabilityHandlers$",
+                     "--skip", "DerivedSessionStateTests/testExtractMetadataStillDecodesCursorTranscriptPath$"]
         subprocess.run(base, check=True)
     else:
         subprocess.run(base + ["--product", "CodeIslandDesktopCore"], check=True, stdout=sys.stderr)

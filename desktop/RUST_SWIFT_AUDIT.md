@@ -19,6 +19,8 @@ python -c "from pathlib import Path; print(Path('.build/direct-audit/package/Tar
 
 原版 Git 测试在桌面测试目标中调用应用实际使用的路径适配器，覆盖带盘符的 worktree 和 submodule 指针。适配器首先调用原版读取器，并将 HEAD 解析委托给原版。macOS 测试目标照常验证原入口。Codex 的进程生命周期用例固定启动 `/bin/sh`，因此在 Linux 和 macOS 运行，其余 Codex 用例也在 Windows 运行。[Git 测试入口](swift/Tests/GitBranchReaderPlatform.swift) · [路径适配器](swift/Platform/CorePlatform.swift)
 
+原版 Cursor 元数据用例直接调用 `extractMetadata`。它以 `/` 拼接项目路径，在 Windows 上会得到 `/C:/…`。该断言在 macOS 和 Linux 上运行。Windows 通过 `DesktopSessions.apply` 接收含盘符或 UNC 路径的 hook，在调用原版归并函数前传入工作区路径。桌面测试通过这个入口检查两个结果。[原版用例](../Tests/CodeIslandCoreTests/DerivedSessionStateTests.swift) · [桌面入口测试](swift/Tests/DesktopCursorPathTests.swift)
+
 ## 仍在复制的 Swift 源码
 
 下表覆盖 `swift_sources.py` 生成的全部 23 个产品源码文件。第一列是 `Selected*.swift` 文件名的中间部分，最后一列给出当前构建不能直接调用相应实现的具体原因。
