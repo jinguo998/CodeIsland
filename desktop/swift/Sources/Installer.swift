@@ -83,12 +83,21 @@ func installerOperation(_ operation: String, _ data: Data) throws -> Data {
     case "install.claudeRoot":
         struct Roots: Decodable { let home: String; let preference: String?; let environment: String? }
         let roots = try decoder.decode(Roots.self, from: data)
+        // The shared resolver builds paths with "/". Win32 extended paths and the
+        // desktop settings UI need native separators, including the fallback root.
+        func localPath(_ path: String) -> String {
+            #if os(Windows)
+            return path.replacingOccurrences(of: "/", with: #"\"#)
+            #else
+            return path
+            #endif
+        }
         let dir = ClaudeConfigPaths.resolve(preference: roots.preference, environment: roots.environment,
             homeDir: roots.home) { path in
                 var isDirectory: ObjCBool = false
-                return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+                return FileManager.default.fileExists(atPath: localPath(path), isDirectory: &isDirectory) && isDirectory.boolValue
             }
-        return try encoder.encode(dir)
+        return try encoder.encode(localPath(dir))
     case "install.entry":
         struct Args: Decodable { let format: String; let source: String; let event: String; let timeout: Int; let command: String }
         let args = try decoder.decode(Args.self, from: data)
